@@ -604,6 +604,7 @@ impl Agent {
         let mut text = String::new();
         let mut tools: Vec<(String, String, String)> = Vec::new();
         let mut usage_acc = Usage::default();
+        // SSE usage events are cumulative per response — use max, not sum
         let mut interrupted = false;
         let mut stop_reason: Option<String> = None;
         while let Some(ev) = rx.recv().await {
@@ -631,7 +632,7 @@ impl Agent {
                     }
                 }
                 StreamEvent::MessageDelta { stop_reason: sr } => stop_reason = sr,
-                StreamEvent::Usage(u) => usage_acc.add(u),
+                StreamEvent::Usage(u) => usage_acc.merge_max(u),
                 StreamEvent::MessageStop => break,
             }
         }

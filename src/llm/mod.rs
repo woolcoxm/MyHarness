@@ -107,6 +107,16 @@ impl Usage {
         self.cache_read_tokens += other.cache_read_tokens;
         self.cache_creation_tokens += other.cache_creation_tokens;
     }
+
+    /// Replace with the highest value seen for each field. SSE stream
+    /// events (message_start, message_delta) report CUMULATIVE totals,
+    /// not increments — so we take the max instead of summing.
+    pub fn merge_max(&mut self, other: Usage) {
+        self.input_tokens = self.input_tokens.max(other.input_tokens);
+        self.output_tokens = self.output_tokens.max(other.output_tokens);
+        self.cache_read_tokens = self.cache_read_tokens.max(other.cache_read_tokens);
+        self.cache_creation_tokens = self.cache_creation_tokens.max(other.cache_creation_tokens);
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
