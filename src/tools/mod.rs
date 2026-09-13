@@ -330,8 +330,34 @@ pub(crate) fn resolve_path(cwd: &Path, p: &str) -> PathBuf {
 /// so the verbatim prefix is stripped (dunce-style).
 pub(crate) fn canon(cwd: &Path, p: &str) -> PathBuf {
     let resolved = resolve_path(cwd, p);
-    match resolved.canonicalize() {
-        Ok(c) => strip_verbatim(c),
+    if let Ok(c) = resolved.canonicalize() {
+        return strip_verbatim(c);
+    }
+    // Not yet existing: canonicalize the deepest existing ancestor and
+    // re-append the missing tail, so the key matches what canonicalize()
+    // will produce once the file exists. A lexical fallback can't do this:
+    // Windows 8.3 short-name components (RUNNER~1 vs runneradmin) only
+    // expand through the filesystem.
+    let mut tail: Vec<std::ffi::OsString> = Vec::new();
+    let mut anc = resolved.as_path();
+    while !anc.exists() {
+        match anc.parent() {
+            Some(parent) => {
+                if let Some(name) = anc.file_name() {
+                    tail.push(name.to_os_string());
+                }
+                anc = parent;
+            }
+            None => return resolved,
+        }
+    }
+    match anc.canonicalize() {
+        Ok(mut c) => {
+            for comp in tail.iter().rev() {
+                c.push(comp);
+            }
+            strip_verbatim(c)
+        }
         Err(_) => resolved,
     }
 }

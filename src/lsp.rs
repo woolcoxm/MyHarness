@@ -230,7 +230,13 @@ fn parse_content_length(headers: &[u8]) -> Option<usize> {
 /// where needed).
 pub fn path_to_uri(p: &Path) -> String {
     let s = p.display().to_string().replace('\\', "/");
-    let mut out = String::from("file:///");
+    // Unix paths already carry the leading '/', which is the URI path root
+    // — don't double it (file:///home, not file:////home).
+    let mut out = if s.starts_with('/') {
+        String::from("file://")
+    } else {
+        String::from("file:///")
+    };
     for c in s.chars() {
         match c {
             'A'..='Z' | 'a'..='z' | '0'..='9' | '-' | '_' | '.' | '~' | '/' | ':' => out.push(c),
@@ -246,10 +252,10 @@ pub fn path_to_uri(p: &Path) -> String {
 
 /// `file:///` URI → filesystem path (percent-decoded, native separators).
 pub fn uri_to_path(uri: &str) -> String {
-    let rest = uri.trim_start_matches("file:///");
-    let decoded = crate::tools::web_search::percent_decode(rest);
+    let decoded = crate::tools::web_search::percent_decode(uri.trim_start_matches("file://"));
     if cfg!(windows) {
-        decoded.replace('/', "\\")
+        // "/C:/work/a.rs" → "C:\work\a.rs"
+        decoded.strip_prefix('/').unwrap_or(&decoded).replace('/', "\\")
     } else {
         decoded
     }
