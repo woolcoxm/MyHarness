@@ -11,7 +11,6 @@ use crate::tools::ToolOutput;
 use serde_json::Value;
 use std::io::Write;
 use tokio::io::AsyncBufReadExt;
-use std::sync::Arc;
 use tokio::sync::mpsc::UnboundedSender;
 
 /// Typed UI events, consumed by the TUI frontend. The stdout sink prints
