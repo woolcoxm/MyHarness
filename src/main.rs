@@ -153,6 +153,17 @@ async fn async_main() -> Result<()> {
         let task = cli.task.unwrap();
         let outcome = agent.run_turn(&task).await?;
         println!("{}", outcome.final_text.trim());
+        // Usage metrics go to stderr so stdout stays clean for pipes.
+        let u = &agent.state.usage;
+        eprintln!(
+            "-- usage: {} request(s) | in {} (cache: {} read, {} write) | out {} | turns {}",
+            agent.state.requests,
+            u.input_tokens,
+            u.cache_read_tokens,
+            u.cache_creation_tokens,
+            u.output_tokens,
+            agent.state.turns,
+        );
         if outcome.interrupted {
             std::process::exit(130);
         }

@@ -1530,6 +1530,25 @@ y"), (2, 0));
         assert_eq!(line_diffstat(&big_old, &big_new), (100, 0));
     }
 
+    /// Cost guard: the model-facing payload (system prompt + tool
+    /// schemas) is the per-request floor. This pins it so it can only
+    /// shrink or grow deliberately. Print with --nocapture to see sizes.
+    #[test]
+    fn prompt_budget_stays_lean() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = state::AgentState::new(dir.path().to_path_buf());
+        let system = system_prompt::build_system(&state, false);
+        let schemas = serde_json::to_string(&Registry::full().schemas()).unwrap();
+        eprintln!(
+            "-- prompt budget: system {} chars, tool schemas {} chars, floor ~{} tokens/request",
+            system.len(),
+            schemas.len(),
+            (system.len() + schemas.len()) / 4
+        );
+        assert!(system.len() < 9_000, "system prompt crept up: {} chars", system.len());
+        assert!(schemas.len() < 30_000, "tool schemas crept up: {} chars", schemas.len());
+    }
+
     #[test]
     fn hints_fire_once_then_throttle() {
         let hints = vec![crate::config::OutputHintDef {

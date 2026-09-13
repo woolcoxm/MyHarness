@@ -303,6 +303,41 @@ cargo build --release --bins --examples
 CI (`.github/workflows/ci.yml`) runs the same on Windows and Ubuntu,
 including an offline smoke of the built binary.
 
+## Running on a token budget
+
+Measured floor: the model-facing payload (system prompt + 16 tool schemas)
+is **~3.8k tokens** — pinned by a regression test so it can only grow
+deliberately. From there, cost is driven by conversation depth, and the
+harness attacks that on every axis:
+
+- **Prompt caching** is on by default: the system prompt, tools, and
+  history prefix are cache-stable (volatile state rides messages), so
+  repeat requests bill `cache_read_tokens` instead of full input — watch
+  the ratio in the turn footer or `/usage`; cache reads typically cost a
+  fraction of fresh input.
+- **`model_fast`**: compaction summaries and web_fetch extraction go to a
+  cheaper model (`glm-4.7-air` recommended).
+- **Cheap reading patterns are trained into the prompt**: grep
+  `files`/`count` modes, `read_file` offset/limit, `repo_map` instead of
+  file crawls — the v0.14 round specifically attacked output tokens (the
+  most expensive class).
+- **Lossless spill**: oversized outputs aren't re-fetched — the model
+  `read_file`s just the slice it needs.
+- **Compaction** at 80% of the window (drop to 0.6 to compact earlier and
+  keep average requests smaller), with oversized results spilled to
+  artifacts first so summaries stay small.
+- **Subagents** keep exploration noise out of the main (cached) thread;
+  **`session_recall`** answers "how did we do X" from past sessions
+  instead of re-deriving it; **zero-mem** injects ~100 tokens of relevant
+  past context instead of whole transcripts.
+- **Thinking is never fed back** into context (display-only), and the
+  skills list is budgeted.
+
+Economy preset (uncomment in `myharness config`'s template): main model
+`glm-4.7-air`, `model_fast` the same, `compact_ratio = 0.6`. `-p` mode
+prints a usage line (requests, in/out, cache read/write) to **stderr** so
+pipelines stay clean while you watch spend.
+
 ## Development
 
 Architecture and the reasoning behind every decision: [DESIGN.md](DESIGN.md)

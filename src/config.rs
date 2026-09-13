@@ -556,6 +556,16 @@ max_age_days = 180
 # pattern = "out of memory"
 # hint = "the build ran out of memory; close other tasks or reduce parallelism"
 
+# --- Token-budget ("economy") preset: uncomment to run cheap -------------
+# The three big levers: a cheaper main model for routine work, a cheaper
+# model for compaction/extraction, and earlier compaction.
+# [model]
+# name = "glm-4.7-air"          # flagship only where it pays
+# model_fast = "glm-4.7-air"    # summaries + web_fetch extraction
+# [agent]
+# compact_ratio = 0.6           # compact earlier: smaller average requests
+# -------------------------------------------------------------------------
+
 # Lifecycle hooks: JSON payload on stdin; exit code 2 blocks
 # (PreToolUse: deny / Stop: force one more round).
 # [[hooks]]

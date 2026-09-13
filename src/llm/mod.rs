@@ -109,7 +109,7 @@ impl Usage {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct ToolSchema {
     pub name: String,
     pub description: String,
