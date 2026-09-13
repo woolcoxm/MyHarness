@@ -1,8 +1,8 @@
 # myharness
 
-**A terminal coding-agent harness for GLM — designed and built autonomously by the same class of model that runs inside it, across 18 research-driven rounds.**
+**A terminal coding-agent harness for GLM — designed and built autonomously by the same class of model that runs inside it, across 20+ research-driven rounds.**
 
-One static Rust binary, no runtime dependencies, Windows-first. Point it at a repo, give it a task, watch it work — through a line-oriented REPL, a custom full-screen TUI with mid-turn steering, a headless pipeline mode with structured output, or a JSON-RPC server mode.
+One static Rust binary, no runtime dependencies, Windows-first. Point it at a repo, give it a task, watch it work — through a line-oriented REPL, a custom full-screen TUI with mid-turn steering, a headless pipeline mode with structured output, an autonomous overnight mode, or a JSON-RPC server.
 
 ```
 $ myharness
@@ -25,7 +25,7 @@ Done. `--verbose` is now accepted and threaded through the config.
 
 ## How this project was created
 
-The unusual part first. myharness was **written autonomously by a GLM-5.3 coding agent** — the same class of model the harness exists to serve. The human collaborator set direction, approved each round, and contributed one research project of his own ([zero-mem](#zero-token-long-term-memory-zero-mem), below); the model wrote every line of Rust, the design document, and the 141-test suite.
+The unusual part first. myharness was **written autonomously by a GLM-5.3 coding agent** — the same class of model the harness exists to serve. The human collaborator set direction, approved each round, and contributed one research project of his own ([zero-mem](#zero-token-long-term-memory-zero-mem), below); the model wrote every line of Rust, the design document, and the 161-test suite.
 
 The method was research-driven. Every version round began from one of three sources:
 
@@ -39,337 +39,211 @@ The method was research-driven. Every version round began from one of three sour
 
 **Finding 2: harness quality is contract quality.** The systems that feel best differ less in features than in the discipline of their model-facing surfaces — error strings that say exactly what to do next, outputs that can never eat the context window, deterministic tools, bounded everything. myharness treats its tool schemas and error strings as a versioned ABI for this reason (see [AGENTS.md](AGENTS.md)).
 
-**Finding 3: the best individual ideas are scattered and mostly small.** What was adopted, and from where:
+**Finding 3: the best individual ideas are scattered and mostly small.** The full provenance table of adopted ideas is in [DESIGN.md](DESIGN.md); the headline adoptions: pi's **steering** (Enter mid-turn injects after the tool batch), the user's own **zero-mem** (zero-LLM-call long-term memory), Cline's **plan-mode read-only command guard** and **stale-context tracking**, Aider's **repo-map budget math** and **reflect loop**, Goose's **turn-context block**, Codex's **actor-shaped TUI frontend**, and ZCode's **goal-loop** pattern (adapted for autonomous mode below).
 
-| Idea | Source | myharness |
-|---|---|---|
-| Exact-string edits, uniqueness errors, read-gating | Claude Code | v0.1 core contracts |
-| Byte-stable system prompt (volatile state rides messages, never the prompt) | own audit, confirmed in every studied codebase | v0.14 |
-| **Steering** — Enter mid-turn queues a message the agent injects after the current tool batch (or uses to revive a finished turn) | pi | v0.16 |
-| **Zero-token long-term memory** — BM25 + entity-graph PageRank retrieval, identity slot, zero LLM calls for memory ops | [zero-mem-pi](https://github.com/woolcoxm/zero-mem-pi) (this repo's author), after [Zero-Mem, arXiv:2607.29377](https://arxiv.org/abs/2607.29377) | v0.18 |
-| Compaction refill guard — context refilling too fast means one result is too large; stop summarizing the summaries | commercial harness (bundle study) | v0.15 |
-| Oversized results spill to files the model can re-read — truncation becomes lossless | same | v0.15 |
-| SSRF destination guard on web tools | same | v0.15 |
-| Plan-mode read-only command execution (quote-aware allowlist parser) | Cline | v0.17 |
-| Tool calls from a length-truncated message fail, never execute (truncated arguments) | pi | v0.17 |
-| Turn-context block: time, cwd, turn budget, context headroom per turn | Goose | v0.17 |
-| Verify-failure reflect loop (failing `verify_cmd` sends the model back, bounded) | Aider | v0.17 |
-| Doom-loop gate (the identical failing call is refused on the 4th try) | OpenCode | v0.17 |
-| Stale-context guard (externally edited files must be re-read first) | Cline | v0.17 |
-| Cross-session recall (search every past transcript) | Goose | v0.17 |
-| Monitor tool (command on a schedule until it matches) | Claude Code | v0.17 |
-| JIT instruction loading (subdirectory AGENTS.md arrives when touched) | Gemini CLI | v0.17 |
-| Repo-map ranking: files-in-context boosted, important files pinned | Aider | v0.17 |
-| Denied ≠ failed rendering; diff previews; thinking collapse | OpenCode / pi | v0.16 TUI |
-| Actor-shaped frontend (worker owns the agent, TUI owns the terminal) | Codex CLI | v0.16 TUI |
-| Two-tier capture: prompt + final answer as memory trace units | zero-mem paper | v0.18 |
+### The benchmark
 
-Ideas evaluated and deliberately **not** built — with reasons — are recorded in DESIGN.md's "Deliberately not built" sections (native-scrollback TUI rendering, session-tree event format, SQLite session index, LLM permission classifier, embedded-JS code-act tool, dense embeddings for memory).
+[BENCHMARK.md](BENCHMARK.md) has the full three-way comparison — the same three.js game prompt through ZCode, pi, and myharness. Measured: ZCode 843k input / 49.5k output / ~6.5k floor; pi 852k input-processed / 58.3k output / ~2.4k floor / $0.58; myharness **3.8k floor (41% smaller than ZCode, 58% larger than pi)** with a leaner tool surface. The honest reading: for long builds, conversation depth and output dominate; the harness's payload floor is second-order. For short interactions (the most common shape), myharness is **~1.7× cheaper per request**. The first-order budget lever is model choice (glm-4.7-air vs glm-5.3).
 
 ---
 
-## Install & run
+## What's in the harness
 
-Requires a Rust toolchain (rustup, MSVC on Windows). Then:
+### The model-facing ABI: 17 tools
 
-```
-cargo build --release
-# binary at target\release\myharness.exe (copy it anywhere)
-```
-
-Set an API key (picked up in this order):
-
-| Variable | Used by |
+| Tool | Contract highlights |
 |---|---|
-| `MYHARNESS_API_KEY` | always wins, any provider |
-| `ZAI_API_KEY` | both providers (recommended for GLM) |
-| `GLM_API_KEY` | both providers |
-| `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` | respective providers |
+| `read_file` | `cat -n` format, 2000-line default with offset/limit, images (png/jpg/gif/webp ≤4 MB) returned as vision blocks |
+| `write_file` | Refuses to overwrite a file not read this session; creates parent dirs |
+| `edit_file` | Exact-string replace; 0-match and N>1-match errors say exactly what to do; stale-context guard refuses if the file changed on disk since it was read |
+| `bash` | Persistent cwd, timeouts with process-tree kills, background mode, sandboxing; oversized output spills whole to an artifact file — head+tail in context, `read_file` for the middle |
+| `bash_output` | Poll background tasks (commands, subagents, monitors) |
+| `glob` / `grep` / `ls` | Find-before-read; grep uses ripgrep's traversal engine with `content/files/count` output modes |
+| `todo_write` | Full-list replacement; rides the message stream (cache-stable), folded into compaction handoffs |
+| `task` | Subagents: `explore` (read-only) / `build` (+bash) presets, `tools` override, turn cap, no recursion, background mode, parallel batches |
+| `web_fetch` | HTML→text, query-focused extraction via `model_fast`, SSRF-guarded (credentials denied, private/loopback denied, redirects returned not followed) |
+| `web_search` | Keyless DuckDuckGo; egress-gated |
+| `repo_map` | PageRank over the import graph; files-in-context boosted, important files pinned |
+| `skill` | Loads SKILL.md packs on demand |
+| `session_recall` | Search every past session's transcript |
+| `monitor` | Run a command on a schedule until its output matches (CI watch, log tails) |
+| + MCP | `[[mcp]]` stdio servers bridge as `mcp__<server>__<tool>` |
 
-**Easiest:** create a `.env` in the repo root (a template with comments is
-included) — the harness loads the nearest `.env` automatically at startup.
-Variables already set in your real environment always win over the file.
-Keep `.env` out of git (already in `.gitignore`); keys are only ever read
-from the environment and never logged or written to transcripts.
-
-Defaults target Z.ai's Anthropic-compatible endpoint with model `glm-5.3`.
-For the OpenAI-compatible endpoint: `--provider openai` (base URL
-`https://api.z.ai/api/paas/v4`), or any provider via `--base-url`.
-
-## Everyday use
+### The turn loop
 
 ```
-myharness                          # interactive REPL
-myharness tui                      # full-screen TUI (steering, palette, modals)
-myharness "fix the build"          # start with a task, stay interactive
-myharness -p "run the tests"       # non-interactive: print final answer, exit
-myharness -p --output-schema s.json "summarize deps as JSON"
-myharness -c                       # resume the most recent session
-myharness resume <id-prefix>       # resume a specific session
-myharness sessions                 # list sessions
-myharness serve                    # JSON-RPC 2.0 over stdio for thin clients
-myharness config                   # effective config + a sample myharness.toml
+user input
+  → zero-mem injection (identity + past-session evidence, zero LLM calls)
+  → turn-context block (time · cwd · turn budget · context headroom)
+  → compaction check: spill oversized results → summarize → handoff
+  → stream (watchdog: 180s stall = loud failure, not hang)
+  → stop_reason=length with tool calls? → fail them (truncated args never execute)
+  → permission-check each call (hooks first; failing hook = fail-closed)
+    → plan mode: read-only command allowlist parser
+    → doom-loop gate: same call failing 3× in a row = refused
+  → parallel fan-out of concurrency-safe tools; state-touching in order
+  → results + output hints + JIT AGENTS.md + steering merge into the stream
+  → verify_cmd / LSP diagnostics / script syntax gate (node --check) after edits
+    → any failure → reflect loop sends the model back (≤3 rounds)
+  → no tool calls? capture to memory, diffstat, footer — done
+  → hard iteration cap (4× turn cap): nothing can spin forever
 ```
 
-### Permission modes
+### Context management
 
-| Mode | Reads | Edits | bash |
-|---|---|---|---|
-| `plan` | allowed | **blocked** (present a plan) | **read-only commands only** (see below) |
-| `ask` (REPL default) | allowed | prompted | prompted |
-| `auto-edit` (`-p` default) | allowed | allowed | allow-rules only, else denied |
-| `yolo` (`--yolo`) | allowed | allowed | allowed |
+- 80%-of-window compaction threshold; structured handoff brief via `model_fast`; tool_use/tool_result pair-safe boundaries; `compaction` event persisted for identical resume.
+- **Spill pre-pass**: tool results over 24k chars are written to session artifacts and replaced with pointers *before* summarizing.
+- **Refill guard**: two auto-compactions in a row that refill within 8 tool results pause auto-compaction and tell the model which result is too large.
+- **Turn-context block** (past ~32k tokens): time, cwd, `turns_taken/max_turns`, context headroom.
 
-Prompts answer `y` (once), `a` (always for this pattern), `n` (deny). Deny
-rules always win, in every mode, and compound commands are checked per
-subcommand (`ls && rm -rf /` cannot ride an `ls` allow rule).
+### Permissions and sandboxing
 
-**Plan mode runs research commands:** `ls`, `cat`, `grep`, `find`,
-`git status/diff/log`, `gh pr list` and friends execute in plan mode via a
-quote-aware allowlist parser — redirection, command substitution, heredocs,
-and unknown interpreters deny. Research no longer needs a mode switch.
+- Modes `plan / ask / auto-edit / yolo`; deny→allow→prompt rule engine with glob patterns; compound-command decomposition; non-interactive fails closed.
+- **Plan mode runs research commands**: quote-aware allowlist parser (`ls`, `cat`, `grep`, `find`, `git status/diff/log`, `gh pr list`, bare-GET `gh api /path`, …) — redirection, substitution, heredocs, and unknown interpreters deny. 13 sneaky bypass forms tested and blocked.
+- **Workspace write-scoping** in unattended modes: `write_file`/`edit_file` traversal (`sub/../../escape.txt`, `../victim.txt`) blocked.
+- Hooks (`PreToolUse`/`PostToolUse`/`Stop`): JSON on stdin, exit 2 blocks; failing hook fails closed.
+- Sandboxing: Windows Job Object (default), Windows **AppContainer** (filesystem isolation + no network), Linux **Landlock**.
+- SSRF guard: hex IP (`0x7f000001`), decimal (`2130706433`), octal (`0177.0.0.1`), v4-mapped v6, credentials in URL — all denied.
 
-### The tools the model gets
+### Script syntax gate
 
-`read_file` (cat -n format, **plus images** — png/jpg/gif/webp come back as
-pictures the model can see), `write_file` (no blind overwrites), `edit_file`
-(exact unique match or `replace_all`; refuses if the file changed on disk
-since it was read — the stale-context guard), `bash` (**background mode**,
-persistent cwd, timeouts, process-tree kills; oversized output spills whole
-to a file the model can `read_file` — truncation is lossless),
-`bash_output` (poll background tasks — commands, subagents, and monitors),
-`glob`, `grep` (gitignore-aware; `output_mode` = content / files / count),
-`ls`, `todo_write` (the list rides the message stream and survives
-compaction), `skill` (load SKILL.md packs), `web_fetch` (HTML→text, or pass
-`prompt` to get a question answered against the page by the cheap model),
-`web_search` (keyless DuckDuckGo), `repo_map` (symbol digest ranked by
-PageRank over the import graph; files-in-context boosted, Cargo.toml/
-Makefile/README pinned), `task` (subagents — `explore` read-only / `build`
-with bash — returning only their final report, synchronous or detached),
-`session_recall` (search every past session's transcript), and `monitor`
-(run a command on a schedule until its output matches — CI watch, log
-tails). **Independent read-only calls in one message run in parallel.**
-
-Plus MCP: `[[mcp]]` stdio servers bridge as `mcp__<name>__<tool>`, gated by
-the normal permission engine.
-
-### The loop, briefly
-
-Each turn: zero-mem injection (past-session evidence + identity, zero LLM
-calls) → turn-context block (time, cwd, turn budget, context headroom) →
-compaction check (spill oversized results, then summarize into a handoff) →
-streamed request with a cache-stable prompt → tool calls permission-checked
-(hooks first; a failing hook fails closed) and fanned out → results, output
-hints, JIT instructions, and steering messages merge into the stream →
-`verify_cmd` / LSP diagnostics after edits (failures trigger a bounded
-reflect loop) → capture the turn to memory, print a per-file `+/-` diffstat.
-Tool calls whose message hit the output-length limit fail loudly instead of
-executing truncated arguments; the same call failing three times in a row
-is refused by the doom-loop gate.
+Every written `.js`/`.mjs`/`.ts`/`.html` goes through `node --check` on a temp module copy (string/comment/template-aware lexical fallback when node is absent). Import maps (JSON, not JS) and external `src=` scripts skipped. A syntax error **cannot end a turn unfixed** — the reflect loop makes fixing it a precondition.
 
 ### Zero-token long-term memory (zero-mem)
 
-A Rust port of [zero-mem-pi](https://github.com/woolcoxm/zero-mem-pi) — this
-repo author's own extension for the pi agent, implementing
-[Zero-Mem (arXiv:2607.29377)](https://arxiv.org/abs/2607.29377). **Memory
-operations never call the LLM.** Every turn's prompt and final answer are
-captured passively to a per-project store; at each new turn, deterministic
-retrieval — BM25 fused with an entity–context graph scored by Personalized
-PageRank, query-conditioned routing, min-max normalization, pool-confidence
-gating ("no memory beats confusing memory"), evidence closure — injects up
-to three snippets under a not-authoritative header. A **sticky identity
-slot** (derived from naming statements, with a poison filter for default
-model names) means a new session never starts not knowing who you are.
-Atomic persistence, cross-process merge, retention bounds.
-`/memory`, `/memory search <q>`, `/memory clear`; configured via `[zero_mem]`.
+A Rust port of [zero-mem-pi](https://github.com/woolcoxm/zero-mem-pi) — this repo author's own extension for the pi agent, implementing [Zero-Mem, arXiv:2607.29377](https://arxiv.org/abs/2607.29377). **Memory operations never call the LLM.** Passive capture; deterministic retrieval (BM25 + entity-graph Personalized PageRank, query-conditioned routing, pool-confidence gating, evidence closure); sticky identity slot (poison filter for default model names); atomic persistence with cross-process merge; retention bounds; sanitized snippets. Live-verified: a fresh session answers stored facts and the user's name entirely from injected memory. `/memory`, `/memory search <q>`, `/memory clear`.
 
-### Full-screen TUI
+### Frontends (one engine, six surfaces)
 
-`myharness tui` — one column, quiet chrome: streaming transcript with diff
-previews at tool start, denied-vs-failed tool states, thinking that streams
-then collapses to one line, a context bar (`ctx N%`, yellow at 75%, red at
-90%), status verbs, permission modals with two-stage "always allow" (shows
-the exact pattern before recording it), **ctrl+r history search**,
-**ctrl+p command palette** over every slash command and skill, and
-**steering**: press Enter while the agent works and your message is
-injected after the current tool batch (or revives a finished turn) instead
-of waiting. ESC interrupts; every REPL slash command works unchanged. The
-plain REPL stays the default (pipes, CI, every console); `NO_COLOR` is
-respected.
+| Surface | What it is |
+|---|---|
+| REPL | Line-oriented ASCII; rustyline history; all slash commands |
+| `myharness tui` | Custom ratatui TUI: streaming transcript, diff previews, denied≠failed states, thinking collapse, context bar, permission modals with two-stage "always", ctrl+r history search, ctrl+p command palette, **steering** (Enter mid-turn → injected after the tool batch), ESC interrupt |
+| `myharness -p "task"` | Headless: final answer to stdout, usage line to stderr; `--output-schema` validates JSON with corrective rounds and exit-code discipline |
+| `myharness -p "task" --autonomous` | **Overnight mode**: work until verified done — the model stopping triggers a self-check prompt (run the tests? read back every file? address everything?); two consecutive "GOAL COMPLETE" confirmations complete; any tool call during a self-check means found more work and continues. Bounded by `--budget-hours` (default 8) and `--budget-tokens` (default 2M). |
+| `myharness serve` | JSON-RPC 2.0 over stdio (`initialize`, `session.attach/new`, `turn.run`, `turn.cancel`, `mh/*` notifications) |
+| `myharness -p "task" --yolo` | No permission prompts (CI, scripting) |
 
-### Skills and command files
+### Persistence
 
-SKILL.md packs discovered from `~/.agents/skills/<name>/SKILL.md` (user) and
-`.agents/skills/<name>/SKILL.md` (workspace, wins collisions) — the same
-locations pi-class harnesses read, so existing skills work in both. Only
-the name + description list rides the system prompt (budgeted); the model
-loads the body through the `skill` tool when a task matches. Slash-command
-templates live in `.agents/commands/*.md` with `$ARGUMENTS` expansion.
+Append-only JSONL event-sourced sessions; resume rebuilds messages, todos, read-guard set with staleness fingerprints, cwd, edit journal; every state change is an event. `/undo` restores journaled edits; per-file `+/-` diffstat per turn; sessions searchable via `session_recall`. API keys from environment only, never logged.
 
-## Configuration
+---
 
-Drop a `myharness.toml` in the repo root (discovered upward) or the user
-config dir. `myharness config` prints the effective config plus the full
-annotated template. Highlights:
+## Getting started
+
+```bash
+cargo build --release
+export ZAI_API_KEY=sk-...
+./target/release/myharness              # REPL
+./target/release/myharness tui          # full-screen TUI
+./target/release/myharness -p "fix it" --yolo
+./target/release/myharness -p "build and test" --autonomous --budget-hours 4
+./target/release/myharness -p "summarize deps" --output-schema schema.json
+./target/release/myharness sessions
+./target/release/myharness resume
+```
+
+Fully offline via the scripted mock provider: `--provider mock` with `MYHARNESS_MOCK_FILE=examples/smoke-script.json`.
+
+### Configuration (`myharness.toml`)
 
 ```toml
 [model]
-provider = "anthropic"   # anthropic | openai | mock
+provider = "anthropic"       # anthropic | openai | mock
 name = "glm-5.3"
 context_window = 200000
-prompt_caching = true    # anthropic-protocol cache breakpoints
-# model_fast = "glm-4.7-air"  # cheaper model for compaction summaries
+prompt_caching = true
+# thinking_budget = 8192     # reasoning tokens per request
+# reasoning_effort = "high"  # openai protocol
+# model_fast = "glm-4.7-air" # cheaper model for compaction/summaries
 
 [agent]
-compact_ratio = 0.8      # auto-compact at 80% of the window
 max_turns = 80
-# verify_cmd = "cargo check"   # after edit turns; failures trigger the reflect loop
+compact_ratio = 0.8
+# verify_cmd = "cargo check" # after edit turns; failures trigger reflect loop
 restrict_writes_to_workspace = true
 
 [bash]
 timeout_ms = 120000
-shell = "auto"           # auto | bash | powershell | cmd
-sandbox = "job"          # windows: job | appcontainer | off; linux: strict | off
+sandbox = "job"              # windows: job | appcontainer; linux: strict | off
 
 [web]
-private_hosts = false    # allow web_fetch to reach localhost/private (dev servers)
+private_hosts = false        # allow web_fetch to reach localhost/private
 
 [zero_mem]
-enabled = true           # zero-LLM long-term memory
+enabled = true
 top_k = 3
 max_units = 5000
 max_age_days = 180
 
-[[permissions.allow]]
-tool = "bash"
-pattern = "cargo *"
-
-[[permissions.deny]]
-tool = "write_file"
-pattern = "*.env"
+# [[output_hint]] pattern = "API rate limit exceeded" hint = "check gh api rate_limit..."
+# [[hooks]] event = "PreToolUse" tool = "bash" command = "my-guard.cmd"
+# [[mcp]] name = "github" command = "npx" args = ["-y", "@modelcontextprotocol/server-github"]
+# [[lsp]] name = "rust" languages = ["rs"] command = "rust-analyzer"
+# [[permissions.allow]] tool = "bash" pattern = "cargo *"
 ```
 
-Also: `[[hooks]]` (`PreToolUse`/`PostToolUse`/`Stop`; exit 2 blocks; a
-failing hook fails closed), `[[mcp]]` servers, `[[lsp]]` language servers
-(edited files get real diagnostics injected after the edit round), and
-`[[output_hint]]` pattern→guidance rules fired against tool results.
+`myharness config` prints the effective config plus the full annotated template.
 
-> Windows note: use single-quoted TOML strings for paths —
-> `command = 'C:\tools\server.exe'` — because `\U` in double quotes is a
-> TOML unicode escape.
+### Skills and command files
 
-**Project instructions:** an `AGENTS.md` at the repo root is injected into
-the system prompt (nearest upward, 8k cap) along with a repository-layout
-digest; subdirectory `AGENTS.md` files arrive just-in-time when the model
-starts working there.
+SKILL.md packs discovered from `~/.agents/skills/<name>/SKILL.md` (user) and `.agents/skills/<name>/SKILL.md` (workspace, wins collisions) — the same locations pi-class harnesses read. Slash-command templates: `.agents/commands/*.md` with `$ARGUMENTS` expansion.
 
-**Undo:** every `write_file`/`edit_file` journals the prior state; `/undo
-[n]` restores it, surviving restarts. Each turn ends with a per-file
-`+12 -8` diffstat computed from the journal.
-
-**Sandboxing:** Windows Job Objects (default — command trees die with the
-harness), Windows **AppContainer** (real filesystem isolation: writes only
-to workspace + temp, no network inside the container), Linux **Landlock**
-(write-scoped, opt-in).
-
-**Network egress is gated and guarded:** `web_fetch` prompts in ask mode
-(fails closed in `-p` without an allow rule); destinations are SSRF-guarded
-(credentials denied; loopback/private/link-local hosts denied unless
-`[web] private_hosts = true`); redirects are returned, not followed.
-
-**Server mode:** `myharness serve` is line-framed JSON-RPC 2.0 over stdio —
-`initialize`, `session.list`, `session.attach`/`session.new`, `turn.run`
-(responses carry the `session_id`), `turn.cancel`, with `mh/*` notifications
-streaming during turns.
-
-**Structured output:** `myharness -p --output-schema '<json or path>' "task"`
-requires the final message to be JSON matching the schema (subset: `type`,
-`properties`, `required`, `items`, `enum`). Invalid output gets two
-corrective rounds in-loop; still-failing output prints and exits non-zero —
-stdout stays trustworthy for pipelines.
-
-## Offline / CI testing
-
-The `mock` provider replays scripted conversations
-(`MYHARNESS_MOCK_FILE=examples/smoke-script.json`), so the whole harness is
-testable with no network and no keys:
-
-```
-cargo test        # 141 tests: unit + end-to-end on the mock provider
-cargo clippy      # clean, all targets
-cargo build --release --bins --examples
-```
-
-CI (`.github/workflows/ci.yml`) runs the same on Windows and Ubuntu,
-including an offline smoke of the built binary.
+---
 
 ## Running on a token budget
 
-Measured floor: the model-facing payload (system prompt + 16 tool schemas)
-is **~3.8k tokens** — pinned by a regression test so it can only grow
-deliberately. From there, cost is driven by conversation depth, and the
-harness attacks that on every axis:
+Measured floor: ~3.8k tokens (system prompt + 17 tool schemas), pinned by a regression test. The levers, in order of magnitude:
 
-- **Prompt caching** is on by default: the system prompt, tools, and
-  history prefix are cache-stable (volatile state rides messages), so
-  repeat requests bill `cache_read_tokens` instead of full input — watch
-  the ratio in the turn footer or `/usage`; cache reads typically cost a
-  fraction of fresh input.
-- **`model_fast`**: compaction summaries and web_fetch extraction go to a
-  cheaper model (`glm-4.7-air` recommended).
-- **Cheap reading patterns are trained into the prompt**: grep
-  `files`/`count` modes, `read_file` offset/limit, `repo_map` instead of
-  file crawls — the v0.14 round specifically attacked output tokens (the
-  most expensive class).
-- **Lossless spill**: oversized outputs aren't re-fetched — the model
-  `read_file`s just the slice it needs.
-- **Compaction** at 80% of the window (drop to 0.6 to compact earlier and
-  keep average requests smaller), with oversized results spilled to
-  artifacts first so summaries stay small.
-- **Subagents** keep exploration noise out of the main (cached) thread;
-  **`session_recall`** answers "how did we do X" from past sessions
-  instead of re-deriving it; **zero-mem** injects ~100 tokens of relevant
-  past context instead of whole transcripts.
-- **Thinking is never fed back** into context (display-only), and the
-  skills list is budgeted.
+1. **Model choice** (glm-4.7-air vs glm-5.3 — dwarfs everything else)
+2. **`model_fast`** for compaction and web_fetch extraction
+3. **Prompt caching** (byte-stable prefix; cache reads typically ~10% of fresh input)
+4. **Output-token discipline** (v0.14's prompt round: grep files/count, offset/limit reads, repo_map)
+5. **Thinking budget** (`[model] thinking_budget`) — the biggest per-request output lever
+6. **Compaction** at 80% (drop to 0.6 to compact earlier)
+7. **Subagents** keep exploration out of the cached thread; **session_recall** + **zero-mem** answer from memory instead of re-deriving
 
-Economy preset (uncomment in `myharness config`'s template): main model
-`glm-4.7-air`, `model_fast` the same, `compact_ratio = 0.6`. `-p` mode
-prints a usage line (requests, in/out, cache read/write) to **stderr** so
-pipelines stay clean while you watch spend.
+Economy preset in `myharness config`'s template. `-p` prints usage to stderr.
+
+---
+
+## Testing
+
+**161 automated tests**, zero network (scripted mock provider):
+
+| Suite | Tests | What it covers |
+|---|---|---|
+| Unit | 97 | Per-module: entity extraction, BM25 ranking, PPR, identity derivation, path resolution, config parsing, prompt budget, permissions, wrap, fingerprints, URI round-trips |
+| Integration | 52 | End-to-end agent loop: tool execution, permission matrices, compaction + spill, steering, doom-loop, stale edits, session recall, memory injection, reflect loop, TUI frame render |
+| Adversarial | 9 | Break-in attempts: sandbox traversal, permission smuggling, plan-mode bypass, SSRF encodings, hostile inputs, torn sessions, JS fuzz, output bounds |
+| Concurrency | 1 | Two processes sharing one memory store don't lose units |
+| Collision | 1 | Unit-id uniqueness across concurrent sessions |
+
+Plus binary smoke tests with `--provider mock`, and a prompt-budget regression test that pins the model-facing payload floor.
+
+`cargo test` and `cargo clippy --all-targets` are clean. CI (`.github/workflows/ci.yml`) runs the same on Windows and Ubuntu, including an offline smoke of the built binary.
+
+---
 
 ## Development
 
-Architecture and the reasoning behind every decision: [DESIGN.md](DESIGN.md)
-— including the v0.5 hostile self-review (which found a real Windows
-guard-key bug that had survived since v0.1), the reverse-engineering
-rounds, and the honest "deliberately not built" sections.
-[AGENTS.md](AGENTS.md) is the contract for coding agents contributing to
-this repo (tool-ABI stability, ASCII UI, Windows-first, offline tests).
+Architecture and the reasoning behind every decision: [DESIGN.md](DESIGN.md) — including the v0.5 hostile self-review, the reverse-engineering rounds, and the honest "deliberately not built" sections. [AGENTS.md](AGENTS.md) is the contract for coding agents contributing to this repo.
 
 ## Known limitations
 
-- Bash-driven file changes are not journaled — `/undo` covers
-  write_file/edit_file only.
-- Linux `strict` sandbox is compile-verified but not runtime-tested here
-  (needs a Linux host with kernel 5.13+); opt-in for that reason.
-- Images in tool results display on the Anthropic-compatible protocol (the
-  default); the OpenAI-compatible protocol degrades them to a text note.
-- Reasoning output is display-only (never fed back — providers reject it on
-  input).
-- Background tasks live in memory — they don't survive a harness restart.
-- MCP tools are called strictly one-at-a-time per server (no pipelining).
-- Resuming a session opens a fresh TUI transcript (history lives in the
-  session file; re-rendering it is roadmap).
-- zero-mem is lexical (BM25 + entity graph) — no dense embeddings ship in
-  the binary; that's the documented upgrade path.
+- Bash-driven file changes are not journaled — `/undo` covers write_file/edit_file only.
+- Linux `strict` sandbox is compile-verified but not runtime-tested here.
+- Images display on the Anthropic protocol; OpenAI degrades to a text note.
+- Reasoning output is display-only.
+- Background tasks live in memory — they don't survive a restart.
+- MCP tools are called one-at-a-time per server.
+- Resuming a session opens a fresh TUI transcript.
+- Autonomous mode runs in-process — close the terminal and it stops.
 
 ## Roadmap
 
-Native-scrollback inline TUI rendering, a session-tree event format
-(in-place branching), a SQLite index over sessions, optional dense
-embeddings for zero-mem, cross-project memory federation, tree-sitter
-symbol precision as an optional repo-map upgrade.
+Native-scrollback inline TUI rendering, session-tree event format, SQLite session index, dense embeddings for zero-mem, cross-project memory federation.
 
 ## License
 
