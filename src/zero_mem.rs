@@ -158,7 +158,12 @@ impl ZeroMem {
         if self.units.iter().any(|u| u.fingerprint == fp) {
             return;
         }
-        let id = format!("u{}", self.units.len() + 1);
+        // Session-prefixed ids: two processes sharing a store both
+        // counting from 1 would collide, and the cross-process merge
+        // dedupes by id — plain u1/u2 silently dropped the other
+        // process's captures.
+        let sess_prefix: String = self.session.chars().take(12).collect();
+        let id = format!("{sess_prefix}-{}", self.units.len() + 1);
         let entities = extract_entities(&text);
         self.units.push(Unit {
             id,
@@ -232,6 +237,11 @@ impl ZeroMem {
 
     pub fn identity(&self) -> &Identity {
         &self.identity
+    }
+
+    /// Number of stored units (status/tests).
+    pub fn count(&self) -> usize {
+        self.units.len()
     }
 
     /// `/memory`: one-line status.

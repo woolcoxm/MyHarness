@@ -1954,3 +1954,40 @@ async fn zero_mem_recalls_across_sessions() {
         .any(|m| m.text().contains("deploy_hook_v2"));
     assert!(injected, "past-session memory must be injected");
 }
+
+#[tokio::test]
+async fn zero_mem_identity_query_also_gets_evidence() {
+    // Live A/B regression: a query that is identity-class ("my name") AND
+    // seeks a stored fact used to receive only the identity line — the
+    // mutual exclusion starved the model of the evidence.
+    let dir = tempfile::tempdir().unwrap();
+    let sess_dir = dir.path().join("data").join("sessions");
+    let s1 = Session::create(&sess_dir, "mock-model", dir.path()).unwrap();
+    let (mut a1, _p) = agent_with(
+        vec![json!({"text": "noted"})],
+        dir.path(),
+        PermissionMode::Yolo,
+        Some(s1),
+    );
+    a1.run_turn("remember: my name is Mark, and the staging deploy hook is `deploy_hook_v2`")
+        .await
+        .unwrap();
+
+    let s2 = Session::create(&sess_dir, "mock-model", dir.path()).unwrap();
+    let (mut a2, _p) = agent_with(
+        vec![json!({"text": "i know both"})],
+        dir.path(),
+        PermissionMode::Yolo,
+        Some(s2),
+    );
+    a2.run_turn("what is my name and what is the staging deploy hook called?")
+        .await
+        .unwrap();
+    let texts: Vec<String> = a2.state.messages.iter().map(|m| m.text()).collect();
+    let joined = texts.join("\n");
+    assert!(joined.contains("(memory) The user goes by"), "{joined}");
+    assert!(
+        joined.contains("deploy_hook_v2"),
+        "evidence must ride along with the identity line: {joined}"
+    );
+}

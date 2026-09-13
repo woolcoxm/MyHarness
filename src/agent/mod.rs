@@ -1303,7 +1303,11 @@ impl Agent {
                     lines.push(line);
                 }
             }
-            if lines.is_empty() && !user_input.trim().is_empty() {
+            // Evidence retrieval runs independently of the identity line —
+            // a query can be identity-class AND seek substantive facts (a
+            // live A/B test showed the old mutual exclusion starving the
+            // model of directly relevant evidence).
+            if !user_input.trim().is_empty() {
                 let window: Vec<String> =
                     self.state.messages.iter().map(|m| m.text()).collect();
                 let fps = crate::zero_mem::ZeroMem::window_fingerprints(&window);
