@@ -22,14 +22,15 @@ pub struct Skill {
 }
 
 /// User-level skills directory (`MYHARNESS_SKILLS_DIR` overrides the default
-/// `~/.agents/skills`, which ZCode-class harnesses share).
+/// `~/.myharness/skills` — myharness's own storage, deliberately separate
+/// from pi-class harnesses that use `~/.agents/skills`).
 pub fn user_skills_dir() -> Option<PathBuf> {
     if let Ok(d) = std::env::var("MYHARNESS_SKILLS_DIR") {
         if !d.trim().is_empty() {
             return Some(PathBuf::from(d));
         }
     }
-    dirs::home_dir().map(|h| h.join(".agents").join("skills"))
+    dirs::home_dir().map(|h| h.join(".myharness").join("skills"))
 }
 
 /// Discover skills for a session: user directory first, then the nearest
