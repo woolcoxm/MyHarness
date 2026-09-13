@@ -634,7 +634,10 @@ pub async fn handle_slash(agent: &mut Agent, cmd: &str) -> SlashResult {
                         "Credentials saved to {} (obfuscated at rest)",
                         crate::auth::auth_path().map(|p| p.display().to_string()).unwrap_or_default()
                     ));
-                    agent.ui.info("Restart myharness to use the new credentials.");
+                    match agent.reload_credentials() {
+                        Ok(()) => agent.ui.info("Credentials loaded — you're ready to go."),
+                        Err(e) => agent.ui.warn(&format!("credentials saved but reload failed: {e}. Restart myharness.")),
+                    }
                 }
                 Err(e) => agent.ui.warn(&format!("failed to save credentials: {e}")),
             }

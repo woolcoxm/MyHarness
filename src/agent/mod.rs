@@ -150,6 +150,48 @@ impl Agent {
         self.approval_tx = Some(tx);
     }
 
+    /// Reload credentials after /login: re-loads Config from disk,
+    /// rebuilds the provider, and swaps both in-place. The running
+    /// session (messages, todos, journal) is preserved.
+    pub fn reload_credentials(&mut self) -> Result<()> {
+        let cfg = crate::config::Config::load(crate::config::CliOverrides {
+            provider: None,
+            model: None,
+            base_url: None,
+            verbose: false,
+        })?;
+        let provider: Arc<dyn Provider> = match cfg.provider {
+            crate::config::ProviderKind::Anthropic => {
+                let key = cfg.api_key.clone().ok_or_else(|| {
+                    anyhow::anyhow!("no API key found after /login")
+                })?;
+                let mut p = crate::llm::anthropic::AnthropicProvider::new(
+                    cfg.base_url.clone(), key, cfg.prompt_caching,
+                );
+                if let Some(b) = cfg.thinking_budget {
+                    p = p.with_thinking_budget(b);
+                }
+                Arc::new(p)
+            }
+            crate::config::ProviderKind::Openai => {
+                let key = cfg.api_key.clone().ok_or_else(|| {
+                    anyhow::anyhow!("no API key found after /login")
+                })?;
+                let mut p = crate::llm::openai::OpenAiProvider::new(cfg.base_url.clone(), key);
+                if let Some(e) = &cfg.reasoning_effort {
+                    p = p.with_reasoning_effort(e);
+                }
+                Arc::new(p)
+            }
+            _ => anyhow::bail!("cannot reload credentials for mock provider"),
+        };
+        let model = cfg.model.clone();
+        self.cfg = Arc::new(cfg);
+        self.provider = provider;
+        self.model = model;
+        Ok(())
+    }
+
     /// Let a frontend steer a running turn: queued messages are injected
     /// after the current tool batch, mid-turn.
     pub fn set_steering(&mut self, rx: tokio::sync::mpsc::UnboundedReceiver<String>) {
