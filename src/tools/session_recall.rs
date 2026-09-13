@@ -19,7 +19,7 @@ impl Tool for SessionRecallTool {
     }
 
     fn description(&self) -> &'static str {
-        "Searches your past myharness session transcripts for messages containing the query (case-insensitive substring) and returns up to 8 matches, newest first, each with the session id, role, date, and a snippet around the match. Use it to recall how a problem was solved before, decisions from earlier sessions, or prior context on a file. Current-session history is searched too. For fresh research prefer grep/read_file."
+        "Search past session transcripts."
     }
 
     fn schema(&self) -> Value {

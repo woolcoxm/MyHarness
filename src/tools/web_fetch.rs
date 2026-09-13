@@ -24,7 +24,7 @@ impl Tool for WebFetchTool {
     }
 
     fn description(&self) -> &'static str {
-        "Fetches an HTTP(S) URL and returns readable text: HTML is converted to text (scripts/styles dropped), JSON and plain text pass through, everything is capped at ~20k chars (huge pages are head+tail truncated with the full text saved to a file you can read_file). Pass `prompt` to instead get a specific question answered against the page by the fast model — far cheaper on context than reading a long page. Private/localhost destinations are denied (SSRF guard). Redirects are NOT followed: a 3xx returns the Location for you to fetch directly. Use it to check documentation, error messages, and API references."
+        "Fetch a URL, return readable text. Pass prompt= for query-focused extraction. SSRF-guarded."
     }
 
     fn schema(&self) -> Value {

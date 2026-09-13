@@ -15,8 +15,8 @@ impl Tool for EditFileTool {
     }
 
     fn description(&self) -> &'static str {
-        "Replaces an exact match of old_string with new_string in a file. old_string must match the file byte-for-byte including indentation. Without replace_all it must occur exactly once — include surrounding lines to disambiguate multiple matches. The file must have been read this session."
-    }
+        "Exact-string replacement. old_string must match exactly and be unique (or replace_all). File must have been read."
+        }
 
     fn schema(&self) -> Value {
         schema_obj(

@@ -38,7 +38,7 @@ pub struct Cli {
     #[arg(long, requires = "autonomous")]
     pub budget_hours: Option<f64>,
 
-    /// Autonomous mode: total token budget (input + output, default 2M).
+    /// Autonomous mode: total token budget (input + output, default 1M).
     #[arg(long, requires = "autonomous")]
     pub budget_tokens: Option<u64>,
 

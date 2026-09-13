@@ -22,7 +22,7 @@ impl Tool for MonitorTool {
     }
 
     fn description(&self) -> &'static str {
-        "Runs a command repeatedly (default every 10s) in the background until its output matches `pattern` (substring) or is non-empty when no pattern is given, then finishes with that output — poll it with bash_output like any background task. Use it to watch a CI job (gh run view), a log for an error, or a port opening. Bounded by max_checks (default 30). You get a completion notice automatically; keep working meanwhile."
+        "Run a command every N seconds until output matches. Background task."
     }
 
     fn schema(&self) -> Value {

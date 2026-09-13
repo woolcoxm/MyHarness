@@ -17,7 +17,7 @@ impl Tool for BashOutputTool {
     }
 
     fn description(&self) -> &'static str {
-        "Returns the status and output of a background task — a bash command started with run_in_background=true, or a subagent started with task run_in_background=true (its final report arrives here). If the task is still running you get the output so far — keep working and poll again later. Huge output is head+tail truncated with the full text saved to a file you can read_file for the middle. For bash tasks the pid is included so you can kill a stuck one via bash (taskkill /PID <pid> /T /F on Windows, kill on Unix)."
+        "Poll a background task: state, exit code, output tail."
     }
 
     fn schema(&self) -> Value {

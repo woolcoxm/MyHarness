@@ -28,6 +28,7 @@ fn cfg_for(dir: &Path) -> Arc<Config> {
         compact_ratio: 0.8,
         verify_cmd: None,
         restrict_writes_to_workspace: true,
+        verbose_prompt: false,
         prompt_caching: false,
         bash_timeout_ms: 15_000,
         shell: ShellChoice::Auto,

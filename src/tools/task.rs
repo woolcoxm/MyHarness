@@ -24,7 +24,7 @@ impl Tool for TaskTool {
     }
 
     fn description(&self) -> &'static str {
-        "Spawns a subagent that runs a self-contained job with a fresh context and returns only its final report. agent_type picks a preset: \"explore\" (default, read-only: read_file, ls, glob, grep, web_fetch) for research, \"build\" (explore + bash + bash_output) for jobs that must run builds/tests. Set run_in_background=true to start it without waiting and keep working — the final report arrives through bash_output like any background task. Use for broad exploration or parallelizable research so the results land in your context as a digest instead of dozens of raw tool results. The subagent cannot ask questions or spawn further subagents."
+        "Spawn a subagent with fresh context. agent_type: explore (read-only) or build (+bash). Returns only the final report."
     }
 
     fn schema(&self) -> Value {

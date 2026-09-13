@@ -116,7 +116,7 @@ impl Tool for BashTool {
     }
 
     fn description(&self) -> &'static str {
-        "Executes a command in the session shell (git-bash on Windows when available, else PowerShell). The working directory persists between calls (cd sticks; the result ends with `(cwd: …)` when a cd changed it). stdout/stderr are captured; huge output is head+tail truncated with the full text saved to a file you can read_file (with offset/limit) for the middle. The exit code is always reported. timeout_ms defaults to 120000 (max 600000). Set run_in_background=true for long builds/tests: the command starts immediately, you get a task id, and you keep working — poll it later with bash_output. Long-running or user-interrupted foreground commands are killed (process tree)."
+        "Runs a shell command. Persistent cwd, timeout with process-tree kill. run_in_background=true for long tasks (poll with bash_output). Huge output spills to a file you can read_file."
     }
 
     fn schema(&self) -> Value {

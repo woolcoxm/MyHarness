@@ -19,7 +19,7 @@ impl Tool for SkillTool {
     }
 
     fn description(&self) -> &'static str {
-        "Loads a skill (reusable instruction pack) by exact name and returns its full instructions; follow them for the rest of the task. Only names listed under 'Available skills' in the system prompt exist — never guess one. Optional args are appended for skills that take parameters."
+        "Load a SKILL.md instruction pack by name."
     }
 
     fn schema(&self) -> Value {

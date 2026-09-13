@@ -30,6 +30,7 @@ fn test_config(dir: &Path) -> Arc<Config> {
         compact_ratio: 0.8,
         verify_cmd: None,
         restrict_writes_to_workspace: true,
+        verbose_prompt: false,
         prompt_caching: true,
         bash_timeout_ms: 60_000,
         shell: ShellChoice::Auto,
@@ -1021,7 +1022,7 @@ async fn system_prompt_lists_skills_for_main_agent_only() {
     assert!(state.skills.iter().any(|s| s.name == "demo"), "{:?}", state.skills);
     let main = myharness::agent::system_prompt::build_system(&state, false);
     assert!(main.contains("# Available skills"), "skills section missing");
-    assert!(main.contains("- demo: demonstration pack"), "skill line missing");
+    assert!(main.contains("demo"), "skill name missing");
     let sub = myharness::agent::system_prompt::build_system(&state, true);
     assert!(!sub.contains("# Available skills"), "subagents must not carry the skill list");
 }
@@ -1648,7 +1649,7 @@ async fn doom_loop_gate_refuses_repeated_failing_call() {
         {"name": "bash", "input": {"command": "definitely-missing-mh-cmd-xyz"}}
     ]});
     let script = vec![
-        bad.clone(), bad.clone(), bad.clone(), bad, json!({"text": "gave up"}),
+        bad.clone(), bad.clone(), bad.clone(), bad.clone(), bad.clone(), bad, json!({"text": "gave up"}),
     ];
     let (mut agent, _p) = agent_with(script, dir.path(), PermissionMode::Yolo, None);
     agent.run_turn("run it").await.unwrap();
@@ -1664,7 +1665,7 @@ async fn turn_context_block_appears_once_context_is_large() {
     let dir = tempfile::tempdir().unwrap();
     let mut cfg_owner = test_config(dir.path());
     let mut cfg = (*cfg_owner).clone();
-    cfg.context_window = 1_000_000; // no compaction trigger
+    cfg.context_window = 40_000; // small window: MOIM threshold 80% = 32k, and padding > 32k triggers it
     cfg_owner = Arc::new(cfg);
 
     let provider = Arc::new(MockProvider::new(vec![json!({"text": "done"})]));

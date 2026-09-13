@@ -1,0 +1,156 @@
+/* JUNGLE FIGHT'68 — all UI styling */
+*{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{width:100%;height:100%;overflow:hidden;background:#141d0a;font-family:'Courier New',Consolas,monospace;user-select:none;-webkit-user-select:none;touch-action:none}
+canvas#gl{position:fixed;inset:0;display:block}
+
+/* ---------- layers ---------- */
+#vig{position:fixed;inset:0;pointer-events:none;z-index:10;box-shadow:inset 0 0 180px rgba(0,0,0,.55)}
+#dmgvig{position:fixed;inset:0;pointer-events:none;z-index:11;opacity:0;background:radial-gradient(ellipse at center,transparent 42%,rgba(160,10,5,.75) 100%)}
+#flash{position:fixed;inset:0;pointer-events:none;z-index:12;opacity:0;background:#fff}
+#dmgdir{position:fixed;left:50%;top:50%;width:150px;height:150px;margin:-75px 0 0 -75px;pointer-events:none;z-index:11;opacity:0}
+#dmgdir::before{content:'';position:absolute;left:50%;top:-26px;width:110px;height:52px;margin-left:-55px;border-radius:110px 110px 0 0;background:radial-gradient(ellipse at 50% 100%,rgba(255,40,30,.85),rgba(255,40,30,0) 70%);filter:blur(2px)}
+
+/* ---------- scope ---------- */
+#scope{position:fixed;inset:0;pointer-events:none;z-index:9;display:none}
+#scope .sc-h{position:absolute;background:#0c0f08}
+#scope .sc-hh{left:0;right:0;top:50%;height:1px;margin-top:-.5px;opacity:.8}
+#scope .sc-vh{top:0;bottom:0;left:50%;width:1px;margin-left:-.5px;opacity:.8}
+#scope::after{content:'';position:absolute;left:50%;top:50%;width:64vmin;height:64vmin;margin:-32vmin 0 0 -32vmin;border-radius:50%;box-shadow:0 0 0 2px #0c0f08,0 0 60vmin 30vmin #0c0f08 inset,0 0 0 200vmax rgba(4,6,3,.985)}
+
+/* ---------- crosshair / hitmarker ---------- */
+#cross{position:fixed;left:50%;top:50%;z-index:13;pointer-events:none;--gap:8px}
+#cross i{position:absolute;background:#e8f5cf;box-shadow:0 0 2px #000}
+#cross .c-t{width:2px;height:7px;left:-1px;top:calc(-1*var(--gap) - 7px)}
+#cross .c-b{width:2px;height:7px;left:-1px;top:var(--gap)}
+#cross .c-l{width:7px;height:2px;top:-1px;left:calc(-1*var(--gap) - 7px)}
+#cross .c-r{width:7px;height:2px;top:-1px;left:var(--gap)}
+#cross.hide{display:none}
+#hitm{position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);z-index:14;color:#fff;font-size:22px;pointer-events:none;opacity:0;text-shadow:0 0 3px #000}
+#hitm.big{color:#ff3822;font-size:34px;font-weight:bold}
+
+/* ---------- score / feed / banner ---------- */
+#score{position:fixed;top:8px;left:50%;transform:translateX(-50%);z-index:15;color:#cfe3a8;font-size:13px;letter-spacing:1px;text-shadow:1px 1px 0 #000;white-space:nowrap;pointer-events:none}
+#feed{position:fixed;top:32px;left:50%;transform:translateX(-50%);z-index:15;text-align:center;pointer-events:none}
+#feed div{color:#cfe3a8;font-size:12px;line-height:1.45;text-shadow:1px 1px 0 #000;white-space:nowrap;transition:opacity .5s}
+#banner{position:fixed;top:22%;left:50%;transform:translateX(-50%);z-index:16;color:#ffe9a0;font-size:19px;font-weight:bold;letter-spacing:2px;text-shadow:2px 2px 0 #000;opacity:0;transition:opacity .25s;pointer-events:none;text-align:center;white-space:nowrap}
+
+/* ---------- intro cinematic ---------- */
+.lb{position:fixed;left:0;right:0;height:11vh;background:#050703;z-index:20;opacity:0;pointer-events:none}
+#lbTop{top:0}#lbBot{bottom:0}
+#capbar{position:fixed;bottom:12.5vh;left:50%;transform:translateX(-50%);z-index:21;color:#cfe3a8;font-size:15px;letter-spacing:1px;text-shadow:1px 1px 0 #000;text-align:center;max-width:92vw;pointer-events:none}
+
+/* ---------- rotate hint ---------- */
+#rotate{position:fixed;inset:0;z-index:400;background:#0a0f05;color:#cfe3a8;display:none;flex-direction:column;align-items:center;justify-content:center;text-align:center}
+#rotate .rt-t{font-size:22px;font-weight:bold;letter-spacing:3px;margin-bottom:14px}
+#rotate .rt-s{font-size:15px;color:#9db07a;animation:rotspin 2.2s ease-in-out infinite}
+@keyframes rotspin{0%,100%{transform:rotate(0)}50%{transform:rotate(90deg)}}
+@media (orientation:portrait){html.touch #rotate{display:flex}}
+
+/* ---------- platoon panel ---------- */
+#pltpanel{position:fixed;top:8px;left:8px;z-index:15;color:#cfe3a8;font-size:11px;text-shadow:1px 1px 0 #000;pointer-events:none;max-width:330px}
+#pltpanel .pp-t{color:#9db07a;letter-spacing:1px;margin-bottom:3px}
+#pltcounts{line-height:1.5;white-space:pre}
+#pltorder{color:#ffe9a0;margin-top:2px}
+#pltweapons{color:#9db07a}
+
+/* ---------- command menu ---------- */
+#cmdmenu{position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);z-index:30;background:rgba(14,22,8,.96);border:2px solid #141d0a;box-shadow:4px 4px 0 #000,0 0 30px rgba(0,0,0,.6);padding:10px 14px;display:none;min-width:290px}
+#cmdmenu .cm-t{color:#ffe9a0;font-size:13px;letter-spacing:2px;margin-bottom:8px}
+#cmdrows div{color:#cfe3a8;font-size:13px;line-height:1.9;cursor:pointer;pointer-events:auto;padding:0 6px}
+#cmdrows div:hover{background:#3c5220;color:#ffe9a0}
+#cmdrows div.act{color:#ffe9a0}
+#cmdrows div.act::before{content:'\25B6 '}
+#cmdrows div:not(.act)::before{content:'\00a0\00a0 '}
+
+/* ---------- status block ---------- */
+#status{position:fixed;left:8px;bottom:8px;z-index:15;color:#cfe3a8;font-size:13px;text-shadow:1px 1px 0 #000;pointer-events:none}
+.hpwrap{width:170px;height:14px;background:#1a2410;border:2px solid #141d0a;margin-bottom:5px}
+#hpbar{height:100%;width:100%;background:#7ec850}
+#hpbar.low{background:#d13820}
+#ammoline{font-size:15px;font-weight:bold;color:#ffe9a0;margin-bottom:1px}
+#wline{margin-bottom:1px}
+#wline .stance{color:#9db07a}
+#slots{color:#9db07a;font-size:11px;letter-spacing:1px;margin-bottom:2px}
+#supline{color:#9db07a;font-size:11px}
+#envline{color:#9db07a;font-size:11px;margin-top:1px}
+
+/* ---------- minimap ---------- */
+#mapwrap{position:fixed;right:8px;bottom:8px;z-index:15;text-align:center;pointer-events:none}
+#minimap{display:block;border:2px solid #141d0a;box-shadow:0 0 0 1px #3c5220,3px 3px 6px rgba(0,0,0,.5);background:#0a0f05}
+#maplabel{color:#9db07a;font-size:10px;letter-spacing:1px;margin-top:2px;text-shadow:1px 1px 0 #000}
+
+#prompt{position:fixed;left:50%;top:58%;transform:translateX(-50%);z-index:15;color:#ffe9a0;font-size:14px;text-shadow:1px 1px 0 #000;pointer-events:none;opacity:0;background:rgba(10,15,5,.6);padding:3px 10px;border:1px solid #3c5220}
+
+/* ---------- overlays ---------- */
+.ov{position:fixed;inset:0;z-index:100;background:rgba(8,14,6,.9);display:none;align-items:center;justify-content:center;overflow-y:auto}
+.ov.show{display:flex}
+.ov-inner{text-align:center;color:#cfe3a8;padding:26px 18px;max-width:640px;width:100%}
+.title{font-size:44px;letter-spacing:4px;color:#cfe3a8;text-shadow:3px 3px 0 #141d0a,6px 6px 0 #000;margin-bottom:8px}
+.subtitle{font-size:15px;color:#9db07a;letter-spacing:2px;margin-bottom:12px}
+.muted{font-size:12px;color:#9db07a;margin-bottom:12px;line-height:1.6}
+.small{font-size:11px;color:#9db07a;line-height:1.6;margin:12px auto 6px;max-width:520px;text-align:center}
+.ptitle{font-size:30px;letter-spacing:4px;color:#ffe9a0;text-shadow:2px 2px 0 #000;margin-bottom:14px}
+.dtitle{font-size:36px;letter-spacing:4px;color:#ff5040;text-shadow:3px 3px 0 #000;margin-bottom:10px}
+.dsub{font-size:15px;color:#cfe3a8}
+.wtitle{font-size:34px;letter-spacing:3px;color:#ffe9a0;text-shadow:3px 3px 0 #000;margin-bottom:8px}
+.keys{margin:6px auto 14px;border-collapse:collapse;font-size:12px;color:#9db07a}
+.keys td{padding:2px 12px;text-align:left}
+.keys td:nth-child(odd){color:#cfe3a8;text-align:right}
+button{font-family:'Courier New',Consolas,monospace;font-size:20px;letter-spacing:3px;color:#cfe3a8;background:#3c5220;border:2px solid #141d0a;box-shadow:4px 4px 0 #000;padding:12px 34px;cursor:pointer}
+button:hover{background:#4a6628;color:#ffe9a0}
+button:active{transform:translate(2px,2px);box-shadow:2px 2px 0 #000}
+#btnRestart{margin-top:10px}
+
+/* ---------- settings ---------- */
+.settings{margin:14px auto 0;display:inline-block;text-align:left;font-size:12px;color:#9db07a}
+.settings .srow{margin:7px 0;display:flex;align-items:center;gap:8px;justify-content:space-between}
+.settings label{white-space:nowrap}
+.settings input[type=range]{width:140px;accent-color:#7ec850}
+.settings input[type=checkbox]{accent-color:#7ec850;width:15px;height:15px}
+.settings .sval{color:#cfe3a8;width:36px;text-align:right}
+
+/* ---------- touch controls ---------- */
+#touchui{position:fixed;inset:0;z-index:50;display:none;pointer-events:none}
+html.touch #touchui.show{display:block}
+#stickBase{position:absolute;width:116px;height:116px;border-radius:50%;border:2px dashed rgba(207,227,168,.55);background:rgba(20,29,10,.35);display:none}
+#stickNub{position:absolute;width:48px;height:48px;border-radius:50%;background:rgba(207,227,168,.8);left:34px;top:34px}
+#lookpad{position:absolute;right:0;top:0;width:55%;height:100%;pointer-events:auto}
+.tbtn{position:absolute;pointer-events:auto;display:flex;align-items:center;justify-content:center;border-radius:50%;background:rgba(60,82,32,.62);border:2px solid rgba(20,29,10,.9);color:#cfe3a8;font-family:'Courier New',Consolas,monospace;font-size:12px;font-weight:bold;letter-spacing:1px;box-shadow:0 2px 6px rgba(0,0,0,.5);text-shadow:1px 1px 0 #000}
+.tbtn.on{background:rgba(255,233,160,.45);color:#fff}
+.tbtn.dim{opacity:.4}
+#tbFire{width:94px;height:94px;right:24px;bottom:96px;font-size:15px}
+#tbStance{width:72px;height:72px;right:138px;bottom:56px;border-radius:36px}
+#tbAds{width:60px;height:60px;right:34px;bottom:206px}
+#tbRld{width:56px;height:56px;right:112px;bottom:196px}
+#tbJmp{width:56px;height:56px;right:36px;bottom:288px}
+#tbFrag{width:56px;height:56px;right:110px;bottom:272px}
+#tbUse{width:44px;height:44px;right:186px;bottom:150px}
+#tbPause{width:44px;height:44px;right:10px;top:10px}
+#tbOrders{width:44px;height:44px;right:62px;top:10px}
+#tb155{width:58px;height:58px;right:190px;bottom:290px;border-radius:12px}
+#tbNap{width:58px;height:58px;right:252px;bottom:250px;border-radius:12px}
+.tbtn .cd{position:absolute;bottom:-2px;right:-2px;font-size:13px;color:#ffe9a0}
+#tslots{position:absolute;left:12px;bottom:8px;display:flex;gap:6px;pointer-events:auto}
+#tslots div{width:44px;height:40px;border-radius:8px;background:rgba(60,82,32,.62);border:2px solid rgba(20,29,10,.9);color:#cfe3a8;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:bold;text-shadow:1px 1px 0 #000}
+#tslots div.act{background:rgba(255,233,160,.4);color:#fff}
+
+/* ---------- debug ---------- */
+#dbg{position:fixed;left:50%;bottom:6px;transform:translateX(-50%);z-index:500;color:#0f0;font-size:11px;font-family:Consolas,monospace;background:rgba(0,0,0,.6);padding:2px 8px;display:none;pointer-events:none;white-space:pre}
+#dbg.show{display:block}
+#dbg.err{color:#f33;font-weight:bold}
+
+/* ---------- touch compaction ---------- */
+html.touch #pltpanel{max-width:230px;font-size:10px;top:6px;left:6px}
+html.touch #pltcounts{font-size:10px}
+html.touch #status{font-size:11px}
+html.touch .hpwrap{width:120px;height:10px}
+html.touch #ammoline{font-size:12px}
+html.touch #score{font-size:11px;top:6px}
+html.touch #feed{top:26px}
+html.touch #feed div{font-size:10px}
+html.touch .keys{display:none}
+html.touch #mapwrap{right:6px;top:64px;bottom:auto}
+html.touch #minimap{width:126px;height:126px}
+html.touch #cmdrows div{min-height:44px;line-height:44px;font-size:15px}
+html.touch #banner{font-size:14px}
+html.touch .title{font-size:30px}

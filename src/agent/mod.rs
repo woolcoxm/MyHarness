@@ -70,9 +70,10 @@ const FAST_REFILL_RESULTS: u64 = 8;
 const FAST_REFILL_STREAK: u32 = 2;
 /// Doom-loop gate: the same call failing this many times in a row is a
 /// loop; further identical calls are refused until something changes.
-const DOOM_STREAK: usize = 3;
-/// Turn-context block is skipped while the conversation is small (Goose).
-const MOIM_MIN_TOKENS: u64 = 32_000;
+const DOOM_STREAK: usize = 5;
+/// Turn-context block threshold: only inject at this fraction of the
+/// context window (was 32K fixed, now adaptive — lean by default).
+const MOIM_CONTEXT_FRACTION: f64 = 0.80;
 
 #[derive(Debug, Clone)]
 pub struct TurnOutcome {
@@ -312,7 +313,7 @@ impl Agent {
                 // Reflect loop (Aider): the verify command failed after the
                 // last edits and the model is trying to stop anyway — send
                 // it back for the failures (bounded).
-                if self.verify_failed && !self.is_subagent && self.reflect_rounds < 3 {
+                if self.verify_failed && !self.is_subagent && self.reflect_rounds < 1 {
                     self.reflect_rounds += 1;
                     self.verify_failed = false;
                     self.ui.warn(&format!(
@@ -474,7 +475,12 @@ impl Agent {
                                 Some("js") | Some("mjs") | Some("ts") | Some("html") | Some("htm")
                             )
                         })
-                        .collect();
+                        // Only check the last target — earlier writes in the same
+                        // batch will be superseded by later ones.
+                        .collect::<Vec<_>>()
+                        .last()
+                        .map(|l| vec![l.clone()])
+                        .unwrap_or_default();
                     let problems: Vec<String> = targets
                         .iter()
                         .filter_map(|p| crate::tools::js_check::check_file(p))
@@ -1347,7 +1353,8 @@ impl Agent {
     /// time, cwd, turn budget, and — once meaningful — context headroom.
     fn inject_turn_context(&mut self) {
         let est = self.context_estimate();
-        if est < MOIM_MIN_TOKENS {
+        let threshold = (MOIM_CONTEXT_FRACTION * self.cfg.context_window as f64) as u64;
+        if est < threshold {
             return;
         }
         let window = self.cfg.context_window;
@@ -1707,6 +1714,7 @@ y"), (2, 0));
             compact_ratio: 0.8,
             verify_cmd: None,
             restrict_writes_to_workspace: true,
+            verbose_prompt: false,
             prompt_caching: false,
             bash_timeout_ms: 5_000,
             shell: crate::config::ShellChoice::Auto,

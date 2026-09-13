@@ -81,7 +81,8 @@ async fn async_main() -> Result<()> {
         }
         None => {
             let root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-            let state = AgentState::new(root);
+            let mut state = AgentState::new(root);
+        state.verbose_prompt = cfg.verbose_prompt;
             // -p keeps a session too: the transcript is the debug record and
             // usage history for pipeline runs, not just interactive ones.
             let session = Session::create(&cfg.sessions_dir(), &cfg.model, &state.cwd)?;
@@ -201,7 +202,7 @@ async fn async_main() -> Result<()> {
 async fn autonomous_run(agent: &mut Agent, task: &str, cli: &cli::Cli) -> Result<()> {
     let deadline = std::time::Instant::now()
         + std::time::Duration::from_secs_f64(cli.budget_hours.unwrap_or(8.0) * 3600.0);
-    let token_budget = cli.budget_tokens.unwrap_or(2_000_000);
+    let token_budget = cli.budget_tokens.unwrap_or(1_000_000);
 
     eprintln!(
         "-- autonomous: budget {}h / {}M tokens | task: {}",

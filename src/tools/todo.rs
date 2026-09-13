@@ -17,7 +17,7 @@ impl Tool for TodoTool {
     }
 
     fn description(&self) -> &'static str {
-        "Replaces the session task list (this is a full replacement, not a merge). Each todo has content, status (pending | in_progress | completed) and priority (high | medium | low). Keep exactly one item in_progress at a time. Use for any task with 3+ steps."
+        "Replace the full task list. One item in_progress at a time."
     }
 
     fn schema(&self) -> Value {

@@ -16,7 +16,7 @@ impl Tool for GlobTool {
     }
 
     fn description(&self) -> &'static str {
-        "Returns file/directory paths matching a glob pattern (e.g. `src/**/*.rs`, `**/*.toml`). Sorted, capped at 200 matches. Use this to find files by name before reading."
+        "File pattern matching, sorted by mtime."
     }
 
     fn schema(&self) -> Value {

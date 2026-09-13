@@ -26,7 +26,7 @@ impl Tool for RepoMapTool {
     }
 
     fn description(&self) -> &'static str {
-        "Returns a symbol map of the repository: per file, the definitions it contains (functions, structs, classes, traits...), most recently modified files first. Cheaper than grep when the question is 'where is X defined' — then read_file/grep for details. Best-effort regex extraction; generated/minified files are skipped."
+        "Symbol-level repo map ranked by import references."
     }
 
     fn schema(&self) -> Value {

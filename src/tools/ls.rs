@@ -16,7 +16,7 @@ impl Tool for LsTool {
     }
 
     fn description(&self) -> &'static str {
-        "Lists the contents of a directory (one level): directories first with a trailing /, then files. Hidden entries included."
+        "List directory contents."
     }
 
     fn schema(&self) -> Value {

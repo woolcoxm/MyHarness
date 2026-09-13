@@ -19,7 +19,7 @@ impl Tool for GrepTool {
     }
 
     fn description(&self) -> &'static str {
-        "Searches file contents with a regular expression (Rust regex syntax). Default output_mode \"content\" returns `path:line:text` matches; \"files\" returns just the matching paths with counts (cheap when you only need where, not what); \"count\" returns `path:N`. Respects .gitignore and skips dependency/build directories. Use `glob` to filter by file type (e.g. \"*.rs\"), `ignore_case` for case-insensitive search. Prefer this over reading files to find things."
+        "Content search (ripgrep engine). output_mode: content | files | count."
     }
 
     fn schema(&self) -> Value {

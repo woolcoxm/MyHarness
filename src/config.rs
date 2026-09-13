@@ -153,6 +153,8 @@ struct FileAgent {
     verify_cmd: Option<String>,
     /// Keep write_file/edit_file inside the workspace root in unattended modes.
     restrict_writes_to_workspace: Option<bool>,
+    /// Use the full system prompt (richer guidance). Default: lean.
+    verbose_prompt: Option<bool>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -204,6 +206,8 @@ pub struct Config {
     pub compact_ratio: f32,
     pub verify_cmd: Option<String>,
     pub restrict_writes_to_workspace: bool,
+    /// Full system prompt (default: lean for token efficiency).
+    pub verbose_prompt: bool,
     pub prompt_caching: bool,
     pub thinking_budget: Option<u64>,
     pub reasoning_effort: Option<String>,
@@ -307,6 +311,11 @@ impl Config {
                 .as_ref()
                 .and_then(|a| a.restrict_writes_to_workspace)
                 .unwrap_or(true),
+            verbose_prompt: file
+                .agent
+                .as_ref()
+                .and_then(|a| a.verbose_prompt)
+                .unwrap_or(false),
             prompt_caching: file
                 .model
                 .as_ref()

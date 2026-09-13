@@ -21,7 +21,7 @@ impl Tool for WebSearchTool {
     }
 
     fn description(&self) -> &'static str {
-        "Searches the web and returns ranked results (title, url, snippet) — use it when you do not yet know which URL to fetch; pair with web_fetch to read a promising result. Up to 8 results, no API key needed."
+        "Search the web (DuckDuckGo). Returns titles, URLs, snippets."
     }
 
     fn schema(&self) -> Value {

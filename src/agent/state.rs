@@ -114,6 +114,8 @@ pub struct AgentState {
     /// Background tasks whose completion notice has been delivered to the
     /// model (runtime-only; tasks themselves do not survive resume).
     pub bg_noticed: std::collections::HashSet<u32>,
+    /// Use the FULL system prompt (richer guidance) instead of LEAN.
+    pub verbose_prompt: bool,
 }
 
 const MAX_PROJECT_CONTEXT: usize = 8_000;
@@ -239,6 +241,7 @@ impl AgentState {
             skills,
             commands,
             bg_noticed: std::collections::HashSet::new(),
+            verbose_prompt: false,
         }
     }
 

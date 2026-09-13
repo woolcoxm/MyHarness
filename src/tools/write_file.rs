@@ -15,8 +15,8 @@ impl Tool for WriteFileTool {
     }
 
     fn description(&self) -> &'static str {
-        "Creates a file (parent directories are created automatically) or overwrites an existing one. An existing file can only be overwritten after it was read with read_file in this session."
-    }
+        "Writes a file. Refuses to overwrite unread files. Creates parent dirs."
+        }
 
     fn schema(&self) -> Value {
         schema_obj(

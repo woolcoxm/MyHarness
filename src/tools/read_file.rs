@@ -38,8 +38,8 @@ impl Tool for ReadFileTool {
     }
 
     fn description(&self) -> &'static str {
-        "Reads a file and returns it to you. Text files come back line-numbered in `cat -n` format (`     1\ttext`); use offset (1-based line) and limit for large files (default limit 2000). Image files (png/jpg/gif/webp) are returned as images you can see — use this for screenshots and UI verification. Reading a file is required before edit_file or overwriting via write_file."
-    }
+        "Reads a file in cat -n format with offset/limit. Images (png/jpg/gif/webp ≤4MB) come back as vision blocks."
+        }
 
     fn schema(&self) -> Value {
         schema_obj(
