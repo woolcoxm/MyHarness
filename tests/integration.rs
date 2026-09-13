@@ -736,22 +736,40 @@ async fn pre_tool_use_hook_blocks() {
     assert!(results[0].0.contains("PreToolUse hook"), "{}", results[0].0);
 }
 
-/// Locate the built mock MCP server example relative to the test binary.
-fn mock_mcp_path() -> std::path::PathBuf {
-    let mut dir = std::env::current_exe().unwrap();
-    // .../target/debug/deps/integration-xxx.exe → .../target
-    for _ in 0..5 {
-        dir.pop();
-        if dir.file_name().and_then(|n| n.to_str()) == Some("target") {
-            break;
+/// Ensure an examples/ binary exists (cargo test --all-targets does not
+/// reliably emit example binaries), locating it in debug or release, and
+/// building it via cargo when absent. Cargo is always available while
+/// running under `cargo test`.
+fn ensure_example(example: &str) -> std::path::PathBuf {
+    let base = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target");
+    let name = if cfg!(windows) {
+        format!("{example}.exe")
+    } else {
+        example.to_string()
+    };
+    for profile in ["debug", "release"] {
+        let candidate = base.join(profile).join("examples").join(&name);
+        if candidate.exists() {
+            return candidate;
         }
     }
-    let candidate = dir
-        .join("debug")
-        .join("examples")
-        .join(if cfg!(windows) { "mock-mcp-server.exe" } else { "mock-mcp-server" });
-    assert!(candidate.exists(), "mock MCP server not built: {}", candidate.display());
-    candidate
+    let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
+    let _ = std::process::Command::new(cargo)
+        .args(["build", "--example", example])
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .output();
+    let built = base.join("debug").join("examples").join(&name);
+    assert!(
+        built.exists(),
+        "example '{example}' could not be located or built: {}",
+        built.display()
+    );
+    built
+}
+
+/// Locate the built mock MCP server example.
+fn mock_mcp_path() -> std::path::PathBuf {
+    ensure_example("mock-mcp-server")
 }
 
 #[tokio::test]
@@ -1275,13 +1293,11 @@ async fn output_schema_exhausts_retries_and_returns_text() {
 }
 
 fn mock_lsp_path() -> std::path::PathBuf {
-    let base = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target");
-    let name = if cfg!(windows) { "mock-lsp-server.exe" } else { "mock-lsp-server" };
+    let debug = ensure_example("mock-lsp-server");
     // Smart App Control (this repo's development machine) sometimes flags a
     // freshly built debug binary by hash while older/release ones stay
     // runnable — fall back to the release build when the debug one is
     // permission-denied.
-    let debug = base.join("debug").join("examples").join(name);
     let spawnable = std::process::Command::new(&debug)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
@@ -1294,7 +1310,14 @@ fn mock_lsp_path() -> std::path::PathBuf {
     if spawnable {
         return debug;
     }
-    let release = base.join("release").join("examples").join(name);
+    let release = debug
+        .parent()
+        .and_then(|p| p.parent())
+        .map(|p| {
+            let fname = debug.file_name().unwrap_or_default().to_owned();
+            p.join("release").join("examples").join(fname)
+        })
+        .unwrap_or_else(|| debug.clone());
     if release.exists() {
         return release;
     }

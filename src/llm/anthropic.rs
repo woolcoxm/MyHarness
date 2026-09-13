@@ -162,8 +162,17 @@ fn map_event(event: Option<&str>, data: &str) -> Vec<StreamEvent> {
         }
         Some("content_block_stop") => out.push(StreamEvent::BlockStop),
         Some("message_delta") => {
-            let output = v["usage"]["output_tokens"].as_u64().unwrap_or(0);
-            out.push(StreamEvent::Usage(super::Usage { output_tokens: output, ..Default::default() }));
+            // Some gateways (Z.ai) report input_tokens: 0 in message_start
+            // and deliver the REAL usage only here — parse input-side fields
+            // when present. Standard Anthropic sends only output_tokens in
+            // this event, so there is no double counting either way.
+            let usage = &v["usage"];
+            out.push(StreamEvent::Usage(super::Usage {
+                output_tokens: usage["output_tokens"].as_u64().unwrap_or(0),
+                input_tokens: usage["input_tokens"].as_u64().unwrap_or(0),
+                cache_read_tokens: usage["cache_read_input_tokens"].as_u64().unwrap_or(0),
+                cache_creation_tokens: usage["cache_creation_input_tokens"].as_u64().unwrap_or(0),
+            }));
             out.push(StreamEvent::MessageDelta {
                 stop_reason: v["delta"]["stop_reason"].as_str().map(str::to_string),
             });

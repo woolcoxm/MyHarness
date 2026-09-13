@@ -82,12 +82,10 @@ async fn async_main() -> Result<()> {
         None => {
             let root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
             let state = AgentState::new(root);
-            if non_interactive {
-                (state, None)
-            } else {
-                let session = Session::create(&cfg.sessions_dir(), &cfg.model, &state.cwd)?;
-                (state, Some(session))
-            }
+            // -p keeps a session too: the transcript is the debug record and
+            // usage history for pipeline runs, not just interactive ones.
+            let session = Session::create(&cfg.sessions_dir(), &cfg.model, &state.cwd)?;
+            (state, Some(session))
         }
     };
 
