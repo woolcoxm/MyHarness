@@ -513,7 +513,7 @@ pub async fn handle_slash(agent: &mut Agent, cmd: &str) -> SlashResult {
             let (name, default_url, default_model, protocol) = match choice.trim() {
                 "1" => (
                     "coding-plan",
-                    "https://open.bigmodel.cn/api/coding/paas/v4".to_string(),
+                    "https://api.z.ai/api/coding/paas/v4".to_string(),
                     "glm-5.3",
                     "openai",
                 ),

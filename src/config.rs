@@ -255,7 +255,7 @@ impl Config {
             .or(file.model.as_ref().and_then(|m| m.provider))
             .unwrap_or(ProviderKind::Anthropic);
         // Auto-switch to OpenAI protocol when the coding plan is detected:
-        // the coding plan endpoint (open.bigmodel.cn) uses OpenAI-compatible
+        // the coding plan endpoint (api.z.ai/api/coding) uses OpenAI-compatible
         // wire format, not Anthropic Messages.
         if provider == ProviderKind::Anthropic && coding_plan_url.is_some() && overrides.base_url.is_none() {
             provider = ProviderKind::Openai;
