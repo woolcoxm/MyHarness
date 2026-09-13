@@ -94,9 +94,10 @@ async fn async_main() -> Result<()> {
         }
     };
 
-    // Default modes: -p runs auto-edit (bash follows allow rules); the REPL
-    // asks. --yolo/--mode always win.
-    let mode = if cli.yolo {
+    // Default modes: -p runs auto-edit (bash follows allow rules); the TUI
+    // asks. --yolo/--mode always win. Autonomous implies yolo — unattended
+    // agents can't stop to ask.
+    let mode = if cli.yolo || cli.autonomous {
         PermissionMode::Yolo
     } else if let Some(m) = &cli.mode {
         PermissionMode::parse(m).with_context(|| format!("invalid --mode '{m}'"))?
