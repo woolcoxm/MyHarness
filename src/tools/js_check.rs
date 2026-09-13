@@ -1,21 +1,20 @@
-//! Script syntax gate: written JavaScript must parse. Two layers:
+//! Script verification gate: written JavaScript must parse AND execute
+//! without runtime errors. Three layers:
 //!
-//! 1. `node --check` on a temp module copy when node is available (the
-//!    authoritative parser — this is exactly how the winning harnesses in
-//!    the three-way benchmark caught what we missed).
-//! 2. A dependency-free lexical fallback when node is absent: string- and
-//!    comment-aware scanning that catches the two most common model
-//!    failure classes — "identifier starts immediately after numeric
-//!    literal" (`1px`, `2d`) and unbalanced braces/parens/brackets.
+//! 1. `node --check` — syntax validation (catches parse errors)
+//! 2. `node -e` runtime execution in a VM with mocked browser globals —
+//!    catches undefined variables, type errors, null references, and
+//!    broken function calls that syntax checking misses
+//! 3. Lexical fallback — catches numeric-identifier collisions and
+//!    unbalanced brackets when node is absent
 //!
-//! Best-effort by law: a missing node or an unreadable file never fails a
-//! turn; problems are reported to the model, and the reflect loop makes
-//! fixing them a precondition for ending the turn.
+//! Best-effort: a missing node never fails a turn, but when node IS
+//! available, runtime errors are reported to the model and the reflect
+//! loop makes fixing them a precondition for ending the turn.
 
 use std::path::Path;
 
-/// Check one written file. Returns a problem report, or None when clean
-/// (or when nothing checkable applied).
+/// Check one written file. Returns a problem report, or None when clean.
 pub fn check_file(path: &Path) -> Option<String> {
     let ext = path
         .extension()
@@ -33,15 +32,18 @@ pub fn check_file(path: &Path) -> Option<String> {
     }
     let combined = blocks.join("\n;\n");
 
-    // Layer 1: the real parser, when present (bounded: a pathological
-    // multi-MB blob goes straight to the cheap lexical pass).
+    // Layer 1: syntax (bounded: pathological blobs go to lexical)
     if combined.len() <= 1_000_000 {
         if let Some(err) = node_check(&combined).flatten() {
-            return Some(format!("{}: {err}", short(path)));
+            return Some(format!("{}: syntax error — {err}", short(path)));
+        }
+        // Layer 2: runtime smoke test (execute in VM with mock browser globals)
+        if let Some(err) = runtime_check(&combined) {
+            return Some(format!("{}: runtime error — {err}", short(path)));
         }
     }
 
-    // Layer 2: lexical fallback.
+    // Layer 3: lexical fallback.
     lexical_check(&combined).map(|err| format!("{}: {err}", short(path)))
 }
 
@@ -211,6 +213,153 @@ pub fn lexical_check(code: &str) -> Option<String> {
             "unbalanced '{open}' opened near line {} and never closed",
             line_of(&chars, *at)
         ));
+    }
+    None
+}
+
+/// Runtime smoke test: executes the code in a Node VM with mocked browser
+/// globals. Catches undefined variables, null references, type errors, and
+/// broken function calls — the bugs that pass `node --check` but break at
+/// runtime (the exact failure class from the Jungle Fight 68 autonomous
+/// build where WASD didn't work but syntax was fine).
+fn runtime_check(code: &str) -> Option<String> {
+    if code.len() > 500_000 {
+        return None; // too big to execute safely
+    }
+
+    // Build a test harness that provides browser globals, then runs the
+    // code. Anything that throws a TypeError, ReferenceError, or similar
+    // is a runtime bug.
+    let harness = format!(
+        r#"{{}}
+const __mockElement = () => new Proxy({{}}, {{
+  get: (target, prop) => {{
+    if (prop === 'style') return new Proxy({{}}, {{ get: () => '', set: () => true }});
+    if (prop === 'classList') return {{ add: ()=>{{}}, remove: ()=>{{}}, toggle: ()=>{{}}, contains: ()=>false }};
+    if (prop === 'addEventListener') return () => {{}};
+    if (prop === 'appendChild') return (c) => c;
+    if (prop === 'getBoundingClientRect') return () => ({{ top:0, left:0, width:800, height:600 }});
+    if (prop === 'querySelector' || prop === 'querySelectorAll') return () => [];
+    if (prop === 'getContext') return () => new Proxy({{}}, {{ get: (t,p) => {{
+      if (p === 'createLinearGradient' || p === 'createRadialGradient') return () => ({{ addColorStop: ()=>{{}} }});
+      if (p === 'measureText') return () => ({{ width: 10 }});
+      return typeof p === 'string' ? (()=>{{}}) : undefined;
+    }}}});
+    if (typeof prop === 'string' && prop.startsWith('on')) return null;
+    return typeof prop === 'symbol' ? undefined : (()=>{{}})(null);
+  }},
+  set: () => true,
+}});
+const document = {{
+  getElementById: () => __mockElement(),
+  createElement: () => __mockElement(),
+  querySelector: () => __mockElement(),
+  querySelectorAll: () => [],
+  body: __mockElement(),
+  documentElement: __mockElement(),
+  addEventListener: () => {{}},
+  createEvent: () => ({{ initEvent: ()=>{{}} }}),
+}};
+const window = new Proxy({{ IS_TOUCH: false, innerWidth: 800, innerHeight: 600, devicePixelRatio: 1, __loadErr: null }}, {{
+  get: (target, prop) => {{
+    if (prop in target) return target[prop];
+    if (prop === 'addEventListener' || prop === 'removeEventListener') return () => {{}};
+    if (prop === 'requestAnimationFrame') return (fn) => setTimeout(fn, 16);
+    if (prop === 'localStorage') return {{ getItem: ()=>null, setItem: ()=>{{}}, removeItem: ()=>{{}} }};
+    if (prop === 'location') return {{ search: '', hash: '', pathname: '/' }};
+    if (prop === 'matchMedia') return () => ({{ matches: false, addEventListener: ()=>{{}} }});
+    if (prop === 'speechSynthesis') return {{ getVoices: ()=>[], speak: ()=>{{}}, cancel: ()=>{{}} }};
+    if (prop === 'AudioContext' || prop === 'webkitAudioContext') return class {{ 
+      createGain() {{ return {{ connect: ()=>{{}}, gain: {{ value: 1, linearRampToValueAtTime: ()=>{{}}, exponentialRampToValueAtTime: ()=>{{}}, setValueAtTime: ()=>{{}} }} }}; }}
+      createOscillator() {{ return {{ connect: ()=>{{}}, start: ()=>{{}}, stop: ()=>{{}}, frequency: {{ value: 440, exponentialRampToValueAtTime: ()=>{{}}, setValueAtTime: ()=>{{}} }} }}; }}
+      createBuffer() {{ return {{ getChannelData: () => new Float32Array(1024) }}; }}
+      createBufferSource() {{ return {{ connect: ()=>{{}}, start: ()=>{{}}, stop: ()=>{{}}, buffer: null }}; }}
+      createBiquadFilter() {{ return {{ connect: ()=>{{}}, frequency: {{ value: 1000, exponentialRampToValueAtTime: ()=>{{}}, setValueAtTime: ()=>{{}} }}, Q: {{value:1}}, type: '' }}; }}
+      createDynamicsCompressor() {{ return {{ connect: ()=>{{}}, threshold: {{value:-18}}, ratio: {{value:6}} }}; }}
+      createStereoPanner() {{ return {{ connect: ()=>{{}}, pan: {{value:0}} }}; }}
+      createWaveShaper() {{ return {{ connect: ()=>{{}} }}; }}
+      get destination() {{ return {{}}; }}
+      get currentTime() {{ return 0; }}
+      get sampleRate() {{ return 44100; }}
+      resume() {{ return Promise.resolve(); }}
+    }};
+    if (prop === 'navigator') return {{ maxTouchPoints: 0, userAgent: 'node' }};
+    if (prop === 'performance') return {{ now: () => Date.now() }};
+    return undefined;
+  }},
+}});
+const self = window;
+const navigator = window.navigator;
+const localStorage = window.localStorage;
+const performance = window.performance;
+const requestAnimationFrame = window.requestAnimationFrame;
+const THREE = new Proxy({{ REVISION: '128' }}, {{
+  get: (target, prop) => {{
+    if (prop in target) return target[prop];
+    // Return a mock class for any THREE.* access
+    return class {{
+      constructor(...args) {{ this.args = args; this.children = []; this.position = {{ x:0, y:0, z:0, set:()=>{{}} }}; this.rotation = {{ x:0, y:0, z:0, set:()=>{{}} }}; this.scale = {{ x:1, y:1, z:1, set:()=>{{}} }}; }}
+      add(...c) {{ this.children.push(...c); return this; }}
+      remove(...c) {{ return this; }}
+      traverse(fn) {{ fn(this); }}
+      getComponent() {{ return 0; }}
+      setScalar(v) {{ return this; }}
+      clone() {{ return this; }}
+      copy() {{ return this; }}
+      length() {{ return 0; }}
+      normalize() {{ return this; }}
+      applyMatrix4() {{ return this; }}
+      set() {{ return this; }}
+    }};
+  }},
+}});
+try {{
+  (function() {{
+{code}
+  }})();
+}} catch (e) {{
+  if (e instanceof TypeError || e instanceof ReferenceError || e instanceof RangeError) {{
+    console.error(e.message);
+    process.exit(1);
+  }}
+  // Game logic errors (custom thrown) are ok — the code at least runs
+}}
+console.error('__RUNTIME_OK__');
+process.exit(0);
+"#
+    );
+
+    let tmp = std::env::temp_dir().join(format!(
+        "mh-runtime-{}.js",
+        &uuid::Uuid::new_v4().simple().to_string()[..12]
+    ));
+    if std::fs::write(&tmp, &harness).is_err() {
+        return None;
+    }
+    let out = std::process::Command::new("node")
+        .arg(&tmp)
+        .output();
+    let _ = std::fs::remove_file(&tmp);
+    let Ok(out) = out else { return None };
+
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    if stderr.contains("__RUNTIME_OK__") {
+        return None; // clean
+    }
+    if stderr.contains("process.exit(1)") || stderr.contains("TypeError")
+        || stderr.contains("ReferenceError") || stderr.contains("RangeError")
+        || out.status.code() == Some(1)
+    {
+        // Extract the actual error message
+        let err_line = stderr
+            .lines()
+            .find(|l| {
+                l.contains("Error") || l.contains("is not defined")
+                    || l.contains("is not a function") || l.contains("Cannot read")
+                    || l.contains("null") || l.contains("undefined")
+            })
+            .unwrap_or("runtime error (code exited with status 1)");
+        return Some(err_line.trim().to_string());
     }
     None
 }

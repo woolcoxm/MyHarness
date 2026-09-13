@@ -11,6 +11,7 @@ use crate::tools::ToolOutput;
 use anyhow::Result;
 use serde_json::Value;
 use std::io::Write;
+use tokio::io::AsyncBufReadExt;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::sync::mpsc::UnboundedSender;
@@ -557,6 +558,85 @@ pub async fn handle_slash(agent: &mut Agent, cmd: &str) -> SlashResult {
                     Some(zm) => agent.ui.info(&zm.status()),
                     None => agent.ui.info("zero-mem is disabled ([zero_mem] enabled = false)"),
                 }
+            }
+        }
+        "login" => {
+            agent.ui.info("Setting up myharness credentials...");
+            agent.ui.info("");
+            agent.ui.info("Which provider are you using?");
+            agent.ui.info("  1. Z.ai Coding Plan (subscription - recommended for GLM models)");
+            agent.ui.info("  2. Standard Z.ai API (pay per token)");
+            agent.ui.info("  3. Custom OpenAI-compatible endpoint");
+            agent.ui.info("");
+            agent.ui.info("Enter your choice [1-3]: ");
+            let mut choice = String::new();
+            let mut stdin = tokio::io::BufReader::new(tokio::io::stdin());
+            if stdin.read_line(&mut choice).await.is_err() {
+                agent.ui.warn("could not read input");
+                return SlashResult::Continue;
+            }
+            let (name, default_url, default_model, protocol) = match choice.trim() {
+                "1" => (
+                    "coding-plan",
+                    "https://open.bigmodel.cn/api/coding/paas/v4".to_string(),
+                    "glm-5.3",
+                    "openai",
+                ),
+                "2" => (
+                    "standard-api",
+                    "https://api.z.ai/api/anthropic".to_string(),
+                    "glm-5.3",
+                    "anthropic",
+                ),
+                "3" => {
+                    agent.ui.info("Enter base URL (e.g. https://api.example.com/v1):");
+                    let mut url = String::new();
+                    let _ = stdin.read_line(&mut url).await;
+                    agent.ui.info("Enter model name:");
+                    let mut model = String::new();
+                    let _ = stdin.read_line(&mut model).await;
+                    (
+                        "custom",
+                        url.trim().to_string(),
+                        if model.trim().is_empty() { "glm-5.3" } else { Box::leak(model.trim().to_string().into_boxed_str()) },
+                        "openai",
+                    )
+                }
+                _ => {
+                    agent.ui.warn("invalid choice, aborting");
+                    return SlashResult::Continue;
+                }
+            };
+            agent.ui.info("Paste your API key:");
+            let mut key = String::new();
+            if stdin.read_line(&mut key).await.is_err() {
+                agent.ui.warn("could not read key");
+                return SlashResult::Continue;
+            }
+            let key = key.trim().to_string();
+            if key.is_empty() {
+                agent.ui.warn("empty key, aborting");
+                return SlashResult::Continue;
+            }
+            let mut providers = std::collections::HashMap::new();
+            providers.insert(
+                name.to_string(),
+                crate::auth::ProviderAuth {
+                    api_key: key,
+                    base_url: default_url,
+                    model: default_model.to_string(),
+                    protocol: protocol.to_string(),
+                },
+            );
+            match crate::auth::save(name, providers) {
+                Ok(()) => {
+                    agent.ui.info(&format!(
+                        "Credentials saved to {} (obfuscated at rest)",
+                        crate::auth::auth_path().map(|p| p.display().to_string()).unwrap_or_default()
+                    ));
+                    agent.ui.info("Restart myharness to use the new credentials.");
+                }
+                Err(e) => agent.ui.warn(&format!("failed to save credentials: {e}")),
             }
         }
         "session" => {

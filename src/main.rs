@@ -257,15 +257,20 @@ async fn autonomous_run(agent: &mut Agent, task: &str, cli: &cli::Cli) -> Result
             cli.budget_hours.unwrap_or(8.0),
         );
 
-        let check_prompt = "(autonomous self-check) You just stopped working without any tool calls. \
-             Before confirming the goal is complete, verify your work:\n\
-             - Did you actually run the build/tests to confirm it works? (bash: cargo test, \
-             npm test, or the project's check command)\n\
-             - Did you read back every file you created/modified to check for syntax errors?\n\
-             - Is there anything in the original task description you haven't addressed?\n\n\
-             If everything is verified and complete, reply with exactly: GOAL COMPLETE\n\
-             If there is any remaining work, any untested change, or any unaddressed \
-             requirement, do that work now using the tools available."
+        let check_prompt = "(autonomous self-check) You stopped without using tools. You MUST verify your work before declaring completion.\n\
+             Perform these checks NOW using bash and read_file:\n\
+             1. SYNTAX: Run the project's build/check command (cargo check, npm run build, tsc, node --check, etc.)\n\
+             2. RUNTIME: Actually run the code. For web projects: use node to import and execute. For applications: run the binary.\n\
+             3. READ-BACK: Read every file you created/modified and check for:\n\
+                - Undefined variables or functions\n\
+                - Missing imports or dependencies\n\
+                - Wrong parameter names or argument counts\n\
+                - Logic errors (off-by-one, wrong conditions, null references)\n\
+             4. COMPLETENESS: Re-read the original task. Is EVERY requirement addressed?\n\
+             5. INTEGRATION: Do all the pieces work together? Do imports resolve? Do function signatures match their call sites?\n\n\
+             If ALL checks pass, reply with exactly: GOAL COMPLETE\n\
+             If ANY check reveals a problem, fix it now using the tools available.\n\
+             Do NOT declare completion without actually running verification commands."
         ;
 
         let check = agent.run_turn(check_prompt).await?;

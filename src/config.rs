@@ -426,10 +426,15 @@ impl Config {
         if let Some(k) = candidates.iter().find_map(|n| std::env::var(n).ok().filter(|v| !v.is_empty())) {
             return Some(k);
         }
+        // Try myharness's own credential store first
+        if let Some(creds) = crate::auth::active_credentials() {
+            return Some(creds.api_key);
+        }
+        // Fall back to pi agent's credentials if installed (shared coding plan)
         Self::discover_pi_auth_key()
     }
 
-    /// Read the coding-plan API key from ~/.pi/agent/auth.json
+    /// Read the coding-plan API key from ~/.pi/agent/auth.json (legacy)
     fn discover_pi_auth_key() -> Option<String> {
         let path = dirs::home_dir()?.join(".pi").join("agent").join("auth.json");
         let raw = std::fs::read_to_string(path).ok()?;
@@ -438,8 +443,13 @@ impl Config {
         (!key.is_empty()).then(|| key.to_string())
     }
 
-    /// Discover the coding-plan base URL from pi's model store.
+    /// Discover the coding-plan base URL from myharness auth or pi's model store.
     pub fn discover_coding_plan_base_url() -> Option<String> {
+        // 1. Our own auth file
+        if let Some(creds) = crate::auth::active_credentials() {
+            return Some(creds.base_url);
+        }
+        // 2. Fall back to pi's model store
         let path = dirs::home_dir()?.join(".pi").join("agent").join("models-store.json");
         let raw = std::fs::read_to_string(path).ok()?;
         let parsed: serde_json::Value = serde_json::from_str(&raw).ok()?;

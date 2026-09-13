@@ -27,6 +27,7 @@
 
 pub mod agent;
 pub mod cli;
+pub mod auth;
 pub mod commands;
 pub mod config;
 pub mod hooks;
