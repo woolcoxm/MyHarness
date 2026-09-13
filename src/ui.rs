@@ -96,14 +96,6 @@ impl Ui {
         self.use_stderr = true;
     }
 
-    fn out_to(&self, s: &str) {
-        if self.use_stderr {
-            eprintln!("{s}");
-        } else {
-            println!("{s}");
-        }
-    }
-
     /// serve mode: all events become JSON notification lines on the channel.
     pub fn channel(tx: UnboundedSender<String>) -> Self {
         Ui { quiet: true, channel: Some(tx), events: None, at_line_start: true, thinking_open: false, use_stderr: false }
