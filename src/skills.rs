@@ -108,7 +108,17 @@ pub fn parse_skill(dir_name: &str, raw: &str, path: PathBuf) -> Skill {
     Skill { name, description, body, path }
 }
 
-/// The always-visible system-prompt section: one line per skill.
+/// Per-skill description display cap in the prompt list.
+const MAX_DESC_CHARS: usize = 120;
+/// Total char budget for the list body (a hundred installed skills must
+/// never eat the system prompt).
+const MAX_SECTION_CHARS: usize = 4_000;
+
+/// The always-visible system-prompt section, budgeted: full name +
+/// description lines while they fit, name-only lines when the descriptions
+/// push past the budget, and a "+N more" footer past that. Workspace skills
+/// override user skills in place, so the winner of a collision always keeps
+/// its slot.
 pub fn render_list(skills: &[Skill]) -> String {
     let mut s = String::from(
         "# Available skills\n\
@@ -116,12 +126,40 @@ pub fn render_list(skills: &[Skill]) -> String {
          `skill` tool with that name BEFORE doing the work and follow the returned\n\
          instructions. The user can also invoke one directly with /<name>.\n\n",
     );
-    for sk in skills.iter().take(MAX_LISTED) {
-        let desc = if sk.description.is_empty() { "(no description)" } else { sk.description.as_str() };
-        s.push_str(&format!("- {}: {}\n", sk.name, desc));
+    let listed: Vec<&Skill> = skills.iter().take(MAX_LISTED).collect();
+    let mut used = 0usize;
+    let mut names_only = false;
+    let mut shown = 0usize;
+    while shown < listed.len() {
+        let sk = listed[shown];
+        let line = if names_only {
+            format!("- {}\n", sk.name)
+        } else {
+            let mut desc: String = sk.description.chars().take(MAX_DESC_CHARS).collect();
+            if sk.description.chars().count() > MAX_DESC_CHARS {
+                desc.push_str("...");
+            }
+            if desc.trim().is_empty() {
+                desc = "(no description)".to_string();
+            }
+            format!("- {}: {}\n", sk.name, desc)
+        };
+        if used + line.chars().count() > MAX_SECTION_CHARS {
+            if names_only {
+                break; // over budget even name-only: stop and footer
+            }
+            names_only = true; // re-render this skill as name-only
+            continue;
+        }
+        s.push_str(&line);
+        used += line.chars().count();
+        shown += 1;
     }
-    if skills.len() > MAX_LISTED {
-        s.push_str(&format!("... and {} more (not listed)\n", skills.len() - MAX_LISTED));
+    if skills.len() > shown {
+        s.push_str(&format!(
+            "... and {} more (the skill tool can load them by name)\n",
+            skills.len() - shown
+        ));
     }
     s
 }
@@ -178,5 +216,53 @@ mod tests {
         assert!(list.contains("- a: desc a"));
         assert!(list.contains("- b: (no description)"));
         assert!(list.contains("skill"));
+    }
+
+    #[test]
+    fn render_list_degrades_to_names_over_budget() {
+        let skills: Vec<Skill> = (0..30)
+            .map(|i| Skill {
+                name: format!("skill-{i}"),
+                description: "d".repeat(300),
+                body: String::new(),
+                path: PathBuf::new(),
+            })
+            .collect();
+        let list = render_list(&skills);
+        // Some full lines, then name-only lines once descriptions blow the
+        // budget — the list must never exceed its section budget by much.
+        assert!(list.contains("- skill-0: "));
+        assert!(list.contains("\n- skill-"), "name-only lines expected: {list}");
+        let body = list.split("\n\n").nth(1).unwrap_or("");
+        assert!(body.chars().count() < MAX_SECTION_CHARS + 200, "body {} chars", body.chars().count());
+    }
+
+    #[test]
+    fn render_list_footers_when_even_names_do_not_fit() {
+        // Names long enough that even name-only lines blow the budget.
+        let skills: Vec<Skill> = (0..30)
+            .map(|i| Skill {
+                name: format!("very-long-skill-name-number-{i}-").to_string() + &"p".repeat(200),
+                description: String::new(),
+                body: String::new(),
+                path: PathBuf::new(),
+            })
+            .collect();
+        let list = render_list(&skills);
+        assert!(list.contains("more (the skill tool can load them by name)"), "{list}");
+    }
+
+    #[test]
+    fn render_list_caps_long_descriptions() {
+        let skills = vec![Skill {
+            name: "a".into(),
+            description: "x".repeat(500),
+            body: String::new(),
+            path: PathBuf::new(),
+        }];
+        let list = render_list(&skills);
+        assert!(list.contains("..."), "capped description needs an ellipsis: {list}");
+        let line = list.lines().find(|l| l.starts_with("- a:")).unwrap();
+        assert!(line.chars().count() < 150, "line not capped: {line}");
     }
 }

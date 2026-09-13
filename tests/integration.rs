@@ -40,6 +40,9 @@ fn test_config(dir: &Path) -> Arc<Config> {
         lsp_servers: vec![],
         sandbox: myharness::config::SandboxMode::Off,
         data_dir: dir.join("data"),
+        web_fetch_private_hosts: false,
+        output_hints: vec![],
+        zero_mem: myharness::zero_mem::ZeroMemCfg::default(),
         verbose: false,
         non_interactive: true,
     })
@@ -66,6 +69,21 @@ fn agent_with(
         false,
     );
     (agent, provider)
+}
+
+
+/// All tool-result texts in the transcript (m.text() skips ToolResult
+/// blocks by design).
+fn all_tool_result_texts(agent: &Agent) -> Vec<String> {
+    let mut out = Vec::new();
+    for m in &agent.state.messages {
+        for b in &m.content {
+            if let ContentBlock::ToolResult { content, .. } = b {
+                out.push(content.clone());
+            }
+        }
+    }
+    out
 }
 
 fn tool_result_texts(agent: &Agent) -> Vec<(String, bool)> {
@@ -290,6 +308,106 @@ async fn compaction_triggers_and_persists() {
     // Compaction event persisted and the summary leads the transcript.
     let raw = std::fs::read_to_string(&session_path).unwrap();
     assert!(raw.contains("\"type\":\"compaction\""));
+}
+
+#[tokio::test]
+async fn refill_guard_stalls_after_two_fast_refills() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut agent, _p) = agent_with(
+        vec![
+            json!({"text": "summary one"}),
+            json!({"text": "summary two"}),
+            json!({"text": "summary three"}),
+        ],
+        dir.path(),
+        PermissionMode::Yolo,
+        None,
+    );
+    agent.state.messages = vec![
+        myharness::llm::Message::user_text("start"),
+        myharness::llm::Message {
+            role: Role::Assistant,
+            content: vec![ContentBlock::Text { text: "ok".into() }],
+        },
+    ];
+
+    // Fast refill #1 (fewer than the threshold tool results since the last
+    // compaction): streak counts, not stalled yet.
+    agent.state.tool_results_since_compact = 2;
+    agent.compact_now(false).await.unwrap();
+    assert_eq!(agent.state.consecutive_fast_refills, 1);
+    assert!(!agent.state.compaction_stalled);
+
+    // Fast refill #2: stalled, and the model got actionable guidance.
+    agent.state.tool_results_since_compact = 1;
+    agent.compact_now(false).await.unwrap();
+    assert_eq!(agent.state.consecutive_fast_refills, 2);
+    assert!(agent.state.compaction_stalled);
+    let text = agent.state.messages.last().unwrap().text();
+    assert!(text.contains("Auto-compaction is paused"), "{text}");
+    assert!(text.contains("bash_output"), "must name the recovery moves: {text}");
+
+    // A manual /compact clears the stall and gives auto a fresh chance.
+    agent.state.tool_results_since_compact = 0;
+    agent.compact_now(true).await.unwrap();
+    assert!(!agent.state.compaction_stalled);
+    assert_eq!(agent.state.consecutive_fast_refills, 0);
+}
+
+#[tokio::test]
+async fn output_hint_fires_and_persists() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut cfg_owner = test_config(dir.path());
+    let mut cfg = (*cfg_owner).clone();
+    cfg.output_hints = vec![myharness::config::OutputHintDef {
+        pattern: "Wrote ".to_string(),
+        hint: "a file was just written — remember to verify it".to_string(),
+    }];
+    cfg_owner = Arc::new(cfg);
+
+    let provider = Arc::new(MockProvider::new(vec![
+        json!({"text": "writing", "tool_calls": [
+            {"name": "write_file", "input": {"path": "t.txt", "content": "hi\n"}}
+        ]}),
+        json!({"text": "done"}),
+    ]));
+    let state = AgentState::new(dir.path().to_path_buf());
+    let session = Session::create(&dir.path().join("s"), "mock-model", dir.path()).unwrap();
+    let session_path = session.path.clone();
+    let mut agent = Agent::new(
+        Arc::clone(&provider) as Arc<dyn Provider>,
+        cfg_owner,
+        state,
+        Ui::quiet(),
+        Some(session),
+        Registry::full(),
+        PermissionEngine::new(PermissionMode::Yolo, vec![], vec![], true),
+        "mock-model".to_string(),
+        Arc::new(AtomicBool::new(false)),
+        false,
+    );
+    agent.run_turn("write the file").await.unwrap();
+    // The hint rode the message stream (persisted like any message) right
+    // after the tool result that matched it.
+    let hint_at = agent
+        .state
+        .messages
+        .iter()
+        .position(|m| m.text().contains("(system) a file was just written"))
+        .expect("hint message must be injected");
+    let result_at = agent
+        .state
+        .messages
+        .iter()
+        .position(|m| {
+            m.content
+                .iter()
+                .any(|b| matches!(b, ContentBlock::ToolResult { .. }))
+        })
+        .expect("tool result message must exist");
+    assert!(hint_at > result_at, "hint follows the matching result");
+    let raw = std::fs::read_to_string(&session_path).unwrap();
+    assert!(raw.contains("a file was just written"), "hint must be persisted");
 }
 
 #[tokio::test]
@@ -692,12 +810,14 @@ async fn web_fetch_gated_but_plan_allowed() {
         ]}),
         json!({"text": "done"}),
     ];
-    // Plan mode: fetch runs (fails on network, NOT on permission).
+    // Plan mode: fetch runs (fails on the SSRF guard or network, NOT on
+    // permission — the local URL is now deterministically guard-denied).
     let (mut agent, _p) = agent_with(script.clone(), dir.path(), PermissionMode::Plan, None);
     agent.run_turn("fetch docs").await.unwrap();
     let results = tool_result_texts(&agent);
     assert!(!results[0].0.contains("permission denied"), "plan mode should allow the fetch itself: {}", results[0].0);
-    assert!(results[0].0.contains("request failed") || results[0].0.contains("HTTP"), "expected a network error: {}", results[0].0);
+    assert!(results[0].0.contains("web_fetch blocked"), "expected the SSRF guard to deny the local URL: {}", results[0].0);
+    assert!(results[0].0.contains("loopback"), "guard error must name the reason: {}", results[0].0);
 
     // Non-interactive auto-edit: gated, no prompt possible → denied.
     let (mut agent, _p) = agent_with(script, dir.path(), PermissionMode::AutoEdit, None);
@@ -1025,6 +1145,7 @@ async fn background_subagent_reports_via_task_entry() {
     // bash_output delivers the report exactly like it does for bash tasks.
     let mut effects = myharness::tools::ToolEffects::default();
     let files = std::collections::HashSet::new();
+    let stats = std::collections::HashMap::new();
     let mut bg_map = std::collections::HashMap::new();
     bg_map.insert(1u32, task);
     let mut ctx = myharness::tools::ToolCtx {
@@ -1033,10 +1154,12 @@ async fn background_subagent_reports_via_task_entry() {
         cfg: test_config(dir.path()),
         provider: Arc::new(MockProvider::new(vec![])) as Arc<dyn Provider>,
         files_read: &files,
+        file_stats: &stats,
         background: &bg_map,
         next_bg_id: 2,
         cancel: Arc::new(AtomicBool::new(false)),
         checkpoint_dir: dir.path().join("cp"),
+        artifacts_dir: dir.path().join("art"),
         journal_next: 0,
         turns: 1,
         effects: &mut effects,
@@ -1445,4 +1568,366 @@ fn serve_mode_attaches_and_resumes_sessions() {
         &[json!({"jsonrpc": "2.0", "id": 1, "method": "session.attach", "params": {"id": "zzznope"}})],
     );
     assert!(out.contains("-32002") && out.contains("no session id matching"), "{out}");
+}
+
+#[tokio::test]
+async fn steering_injects_after_tool_batch() {
+    let dir = tempfile::tempdir().unwrap();
+    let script = vec![
+        json!({"text": "starting", "tool_calls": [
+            {"name": "write_file", "input": {"path": "t.txt", "content": "x\n"}}
+        ]}),
+        json!({"text": "done"}),
+    ];
+    let (mut agent, _p) = agent_with(script, dir.path(), PermissionMode::Yolo, None);
+    // The TUI frontend queues input while the turn runs...
+    let (steer_tx, steer_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    agent.set_steering(steer_rx);
+    steer_tx.send("also check the lint config".to_string()).unwrap();
+
+    let outcome = agent.run_turn("do the thing").await.unwrap();
+    assert!(outcome.final_text.contains("done"));
+    // ...and the agent injects it after the first tool batch, persisted as
+    // a real user message the model saw on the next request.
+    let injected = agent
+        .state
+        .messages
+        .iter()
+        .any(|m| m.text().contains("(user, while you were working) also check the lint config"));
+    assert!(injected, "steering message must be injected");
+}
+
+#[tokio::test]
+async fn length_truncated_tool_calls_fail_not_execute() {
+    let dir = tempfile::tempdir().unwrap();
+    let script = vec![
+        json!({"text": "calling", "stop_reason": "length", "tool_calls": [
+            {"name": "write_file", "input": {"path": "t.txt", "content": "hi\n"}}
+        ]}),
+        json!({"text": "done"}),
+    ];
+    let (mut agent, _p) = agent_with(script, dir.path(), PermissionMode::Yolo, None);
+    agent.run_turn("do it").await.unwrap();
+    let results = all_tool_result_texts(&agent);
+    assert!(
+        results.iter().any(|t| t.contains("length limit")),
+        "dropped-call error must reach the model: {results:?}"
+    );
+    assert!(!dir.path().join("t.txt").exists(), "truncated call must not execute");
+}
+
+#[tokio::test]
+async fn doom_loop_gate_refuses_repeated_failing_call() {
+    let dir = tempfile::tempdir().unwrap();
+    let bad = json!({"text": "retrying", "tool_calls": [
+        {"name": "bash", "input": {"command": "definitely-missing-mh-cmd-xyz"}}
+    ]});
+    let script = vec![
+        bad.clone(), bad.clone(), bad.clone(), bad, json!({"text": "gave up"}),
+    ];
+    let (mut agent, _p) = agent_with(script, dir.path(), PermissionMode::Yolo, None);
+    agent.run_turn("run it").await.unwrap();
+    let results = all_tool_result_texts(&agent);
+    assert!(
+        results.iter().any(|t| t.contains("refused: this exact bash call")),
+        "the doom gate must refuse the 4th identical failure: {results:?}"
+    );
+}
+
+#[tokio::test]
+async fn turn_context_block_appears_once_context_is_large() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut cfg_owner = test_config(dir.path());
+    let mut cfg = (*cfg_owner).clone();
+    cfg.context_window = 1_000_000; // no compaction trigger
+    cfg_owner = Arc::new(cfg);
+
+    let provider = Arc::new(MockProvider::new(vec![json!({"text": "done"})]));
+    let mut state = AgentState::new(dir.path().to_path_buf());
+    // Pad the history past the MOIM floor (~32k tokens).
+    state.messages.push(myharness::llm::Message::user_text("x".repeat(200_000)));
+    let mut agent = Agent::new(
+        Arc::clone(&provider) as Arc<dyn Provider>,
+        cfg_owner,
+        state,
+        Ui::quiet(),
+        None,
+        Registry::full(),
+        PermissionEngine::new(PermissionMode::Yolo, vec![], vec![], true),
+        "mock-model".to_string(),
+        Arc::new(AtomicBool::new(false)),
+        false,
+    );
+    agent.run_turn("hello").await.unwrap();
+    assert!(
+        agent.state.messages.iter().any(|m| m.text().contains("(turn context)")),
+        "turn-context block expected for large contexts"
+    );
+}
+
+#[tokio::test]
+async fn jit_instructions_load_on_subdir_touch() {
+    let dir = tempfile::tempdir().unwrap();
+    let sub = dir.path().join("packages").join("core");
+    std::fs::create_dir_all(&sub).unwrap();
+    std::fs::write(sub.join("lib.rs"), "pub fn f() {}\n").unwrap();
+    std::fs::write(sub.join("AGENTS.md"), "This package uses tabs, never spaces.\n").unwrap();
+
+    let script = vec![
+        json!({"text": "reading", "tool_calls": [
+            {"name": "read_file", "input": {"path": "packages/core/lib.rs"}}
+        ]}),
+        json!({"text": "done"}),
+    ];
+    let (mut agent, _p) = agent_with(script, dir.path(), PermissionMode::Yolo, None);
+    agent.run_turn("read it").await.unwrap();
+    assert!(
+        agent
+            .state
+            .messages
+            .iter()
+            .any(|m| m.text().contains("(project instructions from") && m.text().contains("tabs")),
+        "JIT AGENTS.md must arrive when the subdir is touched"
+    );
+}
+
+#[tokio::test]
+async fn stale_context_guard_blocks_edit_after_external_change() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("t.txt"), "short\n").unwrap();
+
+    let mut effects = myharness::tools::ToolEffects::default();
+    let files = std::collections::HashSet::new();
+    let stats = std::collections::HashMap::new();
+    let bg = std::collections::HashMap::new();
+    let mut ctx = myharness::tools::ToolCtx {
+        cwd: dir.path().to_path_buf(),
+        workspace_root: dir.path().to_path_buf(),
+        cfg: test_config(dir.path()),
+        provider: Arc::new(MockProvider::new(vec![])) as Arc<dyn Provider>,
+        files_read: &files,
+        file_stats: &stats,
+        background: &bg,
+        next_bg_id: 1,
+        cancel: Arc::new(AtomicBool::new(false)),
+        checkpoint_dir: dir.path().join("cp"),
+        artifacts_dir: dir.path().join("art"),
+        journal_next: 0,
+        turns: 1,
+        effects: &mut effects,
+    };
+    let out = myharness::tools::Registry::full()
+        .get("read_file")
+        .unwrap()
+        .execute(json!({"path": "t.txt"}), &mut ctx)
+        .await;
+    assert!(!out.is_error, "{}", out.content);
+    let mut state = AgentState::new(dir.path().to_path_buf());
+    effects.merge_into(&mut state);
+    // External edit with a different length so the fingerprint changes.
+    std::fs::write(dir.path().join("t.txt"), "a completely different and longer body\n").unwrap();
+
+    // The edit must now refuse until the file is re-read.
+    let files: std::collections::HashSet<_> = state.files_read.iter().cloned().collect();
+    let stats = state.file_stats.clone();
+    let bg = std::collections::HashMap::new();
+    let mut effects2 = myharness::tools::ToolEffects::default();
+    let mut ctx2 = myharness::tools::ToolCtx {
+        cwd: dir.path().to_path_buf(),
+        workspace_root: dir.path().to_path_buf(),
+        cfg: test_config(dir.path()),
+        provider: Arc::new(MockProvider::new(vec![])) as Arc<dyn Provider>,
+        files_read: &files,
+        file_stats: &stats,
+        background: &bg,
+        next_bg_id: 1,
+        cancel: Arc::new(AtomicBool::new(false)),
+        checkpoint_dir: dir.path().join("cp"),
+        artifacts_dir: dir.path().join("art"),
+        journal_next: 0,
+        turns: 1,
+        effects: &mut effects2,
+    };
+    let out = myharness::tools::Registry::full()
+        .get("edit_file")
+        .unwrap()
+        .execute(json!({"path": "t.txt", "old_string": "different", "new_string": "x"}), &mut ctx2)
+        .await;
+    assert!(out.is_error, "stale edit must fail");
+    assert!(out.content.contains("changed on disk"), "{}", out.content);
+}
+
+#[tokio::test]
+async fn session_recall_finds_past_messages() {
+    let dir = tempfile::tempdir().unwrap();
+    let sess = dir.path().join("data").join("sessions");
+    std::fs::create_dir_all(&sess).unwrap();
+    let line = serde_json::json!({
+        "type": "message",
+        "role": "user",
+        "content": [{"type": "text", "text": "we fixed the flaky login test by awaiting the spinner"}]
+    });
+    std::fs::write(
+        sess.join("20260101-000000-abcdef.jsonl"),
+        format!("{}\n", line),
+    )
+    .unwrap();
+
+    let mut effects = myharness::tools::ToolEffects::default();
+    let files = std::collections::HashSet::new();
+    let stats = std::collections::HashMap::new();
+    let bg = std::collections::HashMap::new();
+    let mut ctx = myharness::tools::ToolCtx {
+        cwd: dir.path().to_path_buf(),
+        workspace_root: dir.path().to_path_buf(),
+        cfg: test_config(dir.path()),
+        provider: Arc::new(MockProvider::new(vec![])) as Arc<dyn Provider>,
+        files_read: &files,
+        file_stats: &stats,
+        background: &bg,
+        next_bg_id: 1,
+        cancel: Arc::new(AtomicBool::new(false)),
+        checkpoint_dir: dir.path().join("cp"),
+        artifacts_dir: dir.path().join("art"),
+        journal_next: 0,
+        turns: 1,
+        effects: &mut effects,
+    };
+    let out = myharness::tools::Registry::full()
+        .get("session_recall")
+        .unwrap()
+        .execute(json!({"query": "flaky login"}), &mut ctx)
+        .await;
+    assert!(!out.is_error, "{}", out.content);
+    assert!(out.content.contains("awaiting the spinner"), "{}", out.content);
+    assert!(out.content.contains("20260101"), "{}", out.content);
+}
+
+#[tokio::test]
+async fn compaction_spills_oversized_results() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut cfg_owner = test_config(dir.path());
+    let mut cfg = (*cfg_owner).clone();
+    cfg.context_window = 600; // force compaction on the first iteration
+    cfg_owner = Arc::new(cfg);
+
+    let provider = Arc::new(MockProvider::new(vec![json!({"text": "done"})]));
+    let mut state = AgentState::new(dir.path().to_path_buf());
+    state.messages.push(myharness::llm::Message {
+        role: Role::User,
+        content: vec![ContentBlock::ToolResult {
+            tool_use_id: "huge1".to_string(),
+            content: "H".repeat(30_000),
+            images: Vec::new(),
+            is_error: false,
+        }],
+    });
+    state.messages.push(myharness::llm::Message::user_text("go"));
+    let session = Session::create(&dir.path().join("s"), "mock-model", dir.path()).unwrap();
+    let session_path = session.path.clone();
+    let mut agent = Agent::new(
+        Arc::clone(&provider) as Arc<dyn Provider>,
+        cfg_owner,
+        state,
+        Ui::quiet(),
+        Some(session),
+        Registry::full(),
+        PermissionEngine::new(PermissionMode::Yolo, vec![], vec![], true),
+        "mock-model".to_string(),
+        Arc::new(AtomicBool::new(false)),
+        false,
+    );
+    agent.run_turn("continue").await.unwrap();
+    // The giant body became a pointer, the full text went to an artifact,
+    // and the spill event persists for replay.
+    let still_huge = agent.state.messages.iter().any(|m| m.text().len() > 25_000);
+    assert!(!still_huge, "oversized result must not survive in context");
+    let artifacts = dir.path().join("data").join("artifacts");
+    let mut spilled = false;
+    if let Ok(sessions) = std::fs::read_dir(&artifacts) {
+        for sdir in sessions.flatten() {
+            if let Ok(files) = std::fs::read_dir(sdir.path()) {
+                if files.flatten().any(|e| e.file_name().to_string_lossy().starts_with("spill-")) {
+                    spilled = true;
+                }
+            }
+        }
+    }
+    assert!(spilled, "spill artifact missing under {}", artifacts.display());
+    let raw = std::fs::read_to_string(&session_path).unwrap();
+    assert!(raw.contains("\"type\":\"spill\""), "spill event must persist");
+}
+
+#[tokio::test]
+async fn reflect_loop_sends_model_back_after_failed_verify() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut cfg_owner = test_config(dir.path());
+    let mut cfg = (*cfg_owner).clone();
+    cfg.verify_cmd = Some("exit 1".to_string());
+    cfg_owner = Arc::new(cfg);
+
+    let script = vec![
+        json!({"text": "editing", "tool_calls": [
+            {"name": "write_file", "input": {"path": "t.txt", "content": "hi\n"}}
+        ]}),
+        json!({"text": "stopping anyway"}),
+        json!({"text": "fixed it now"}),
+    ];
+    let provider = Arc::new(MockProvider::new(script));
+    let state = AgentState::new(dir.path().to_path_buf());
+    let mut agent = Agent::new(
+        Arc::clone(&provider) as Arc<dyn Provider>,
+        cfg_owner,
+        state,
+        Ui::quiet(),
+        None,
+        Registry::full(),
+        PermissionEngine::new(PermissionMode::Yolo, vec![], vec![], true),
+        "mock-model".to_string(),
+        Arc::new(AtomicBool::new(false)),
+        false,
+    );
+    let outcome = agent.run_turn("write it").await.unwrap();
+    assert!(outcome.final_text.contains("fixed it now"));
+    assert!(
+        agent
+            .state
+            .messages
+            .iter()
+            .any(|m| m.text().contains("verify command that ran after your edits")),
+        "the reflect message must push the model back to work"
+    );
+}
+
+#[tokio::test]
+async fn zero_mem_recalls_across_sessions() {
+    let dir = tempfile::tempdir().unwrap();
+    let sess_dir = dir.path().join("data").join("sessions");
+    // Session A tells the agent a durable fact.
+    let s1 = Session::create(&sess_dir, "mock-model", dir.path()).unwrap();
+    let (mut a1, _p) = agent_with(
+        vec![json!({"text": "got it, noted"})],
+        dir.path(),
+        PermissionMode::Yolo,
+        Some(s1),
+    );
+    a1.run_turn("remember: the staging deploy hook is `deploy_hook_v2` and it fires at 3am")
+        .await
+        .unwrap();
+    // Session B, same project, fresh context: asks about it. The memory
+    // must arrive as an injected message before the model's first reply.
+    let s2 = Session::create(&sess_dir, "mock-model", dir.path()).unwrap();
+    let (mut a2, _p) = agent_with(
+        vec![json!({"text": "i know this one"})],
+        dir.path(),
+        PermissionMode::Yolo,
+        Some(s2),
+    );
+    a2.run_turn("what was the staging deploy hook called?").await.unwrap();
+    let injected = a2
+        .state
+        .messages
+        .iter()
+        .any(|m| m.text().contains("deploy_hook_v2"));
+    assert!(injected, "past-session memory must be injected");
 }

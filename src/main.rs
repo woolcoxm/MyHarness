@@ -1,6 +1,6 @@
 //! myharness — a terminal coding-agent harness for GLM (binary entry point).
 
-use myharness::{agent, cli, config, llm, mcp, perms, server, session, tools, ui};
+use myharness::{agent, cli, config, llm, mcp, perms, server, session, tools, tui, ui};
 
 use agent::state::AgentState;
 use agent::Agent;
@@ -74,8 +74,9 @@ async fn async_main() -> Result<()> {
             let path = find_session(&cfg, if id.is_empty() { None } else { Some(&id) })?;
             let events = Session::read_events(&path)?;
             let root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-            let state = Session::replay(events, root);
-            let session = Session::open(&path)?;
+            let mut state = Session::replay(events, root.clone());
+            let mut session = Session::open(&path)?;
+            crate::session::cwd_note_if_diverged(&mut state, &mut session, &root);
             (state, Some(session))
         }
         None => {
@@ -172,6 +173,9 @@ async fn async_main() -> Result<()> {
         if let Err(e) = agent.run_turn(&task).await {
             agent.ui.warn(&format!("turn failed: {e}"));
         }
+    }
+    if matches!(cli.cmd, Some(cli::Command::Tui)) {
+        return tui::run(agent).await;
     }
     ui::repl(agent).await
 }

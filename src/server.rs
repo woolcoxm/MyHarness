@@ -57,9 +57,11 @@ pub async fn serve(cfg: Config, provider: Arc<dyn Provider>) -> Result<()> {
             Some(prefix) => {
                 let path = find_session(&cfg, prefix)?;
                 let events = Session::read_events(&path)?;
-                let state = Session::replay(events, root.clone());
+                let mut state = Session::replay(events, root.clone());
+                let mut session = Session::open(&path)?;
                 let resumed = state.messages.len();
-                (state, Session::open(&path)?, resumed)
+                crate::session::cwd_note_if_diverged(&mut state, &mut session, &root);
+                (state, session, resumed)
             }
             None => (AgentState::new(root.clone()), Session::create(&cfg.sessions_dir(), &cfg.model, &root)?, 0),
         };

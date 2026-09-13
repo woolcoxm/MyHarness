@@ -74,4 +74,8 @@ pub enum Command {
     /// can drive the harness: initialize, session.list, turn.run,
     /// turn.cancel; mh/* notifications stream during turns.
     Serve,
+    /// Full-screen terminal UI (ratatui): streaming transcript, diff
+    /// previews, permission modals, steering, context bar. The plain REPL
+    /// remains the default for pipes and CI.
+    Tui,
 }

@@ -15,8 +15,11 @@ pub mod edit_file;
 pub mod glob;
 pub mod grep;
 pub mod ls;
+pub mod monitor;
+pub mod net_guard;
 pub mod read_file;
 pub mod repo_map;
+pub mod session_recall;
 pub mod skill;
 pub mod task;
 pub mod todo;
@@ -65,6 +68,9 @@ impl ToolOutput {
 #[derive(Debug, Default, Clone)]
 pub struct ToolEffects {
     pub files_read: Vec<PathBuf>,
+    /// Updated read fingerprints (mtime_ms, len) — recorded by reads and
+    /// refreshed by writes so the stale guard stays coherent.
+    pub file_stats: Vec<(PathBuf, u64, u64)>,
     pub new_cwd: Option<PathBuf>,
     pub todos: Option<Vec<Todo>>,
     /// (id, task) registered by background bash; agent inserts into the map.
@@ -79,6 +85,9 @@ impl ToolEffects {
     pub fn merge_into(self, state: &mut AgentState) {
         for f in self.files_read {
             state.files_read.insert(f);
+        }
+        for (f, m, l) in self.file_stats {
+            state.file_stats.insert(f, (m, l));
         }
         if let Some(cwd) = self.new_cwd {
             state.cwd = cwd;
@@ -103,6 +112,8 @@ pub struct ToolCtx<'a> {
     pub provider: Arc<dyn Provider>,
     /// Read guards: which files were read this session.
     pub files_read: &'a HashSet<PathBuf>,
+    /// Read-guard fingerprints: (mtime_ms, len) as of the last read.
+    pub file_stats: &'a HashMap<PathBuf, (u64, u64)>,
     /// Live background tasks (read view).
     pub background: &'a HashMap<u32, BgTask>,
     /// Id to use for the next background task.
@@ -111,6 +122,8 @@ pub struct ToolCtx<'a> {
     pub cancel: Arc<AtomicBool>,
     /// Where pre-edit backups land (data_dir/checkpoints/<session>).
     pub checkpoint_dir: PathBuf,
+    /// Where oversized outputs spill (data_dir/artifacts/<session>).
+    pub artifacts_dir: PathBuf,
     /// Journal position for unique backup names.
     pub journal_next: usize,
     /// Current turn number (labels journal entries).
@@ -205,6 +218,8 @@ impl Registry {
                 Arc::new(web_fetch::WebFetchTool),
                 Arc::new(web_search::WebSearchTool),
                 Arc::new(repo_map::RepoMapTool),
+                Arc::new(session_recall::SessionRecallTool),
+                Arc::new(monitor::MonitorTool),
             ],
         }
     }
@@ -367,12 +382,97 @@ pub(crate) fn truncate_middle(s: &str, max: usize, head: usize, tail: usize) -> 
     format!("{h}\n... [{dropped} chars truncated] ...\n{t}")
 }
 
+/// Hard cap for a spilled artifact file.
+const MAX_SPILL: usize = 2_000_000;
+
+/// Head+tail budget with a lossless escape hatch: over-budget output is
+/// spilled whole to the session's artifacts directory and the model gets
+/// head+tail plus a pointer it can `read_file` with offset/limit. Spill is
+/// best-effort — a failed write falls back to plain truncation, never
+/// failing the tool.
+pub(crate) fn budget_output(
+    ctx: &ToolCtx<'_>,
+    label: &str,
+    text: &str,
+    max: usize,
+    head: usize,
+    tail: usize,
+) -> String {
+    if text.chars().count() <= max {
+        return text.to_string();
+    }
+    match spill_artifact(&ctx.artifacts_dir, label, text) {
+        Some(path) => truncate_with_pointer(text, head, tail, &path),
+        None => truncate_middle(text, max, head, tail),
+    }
+}
+
+/// Write the full text (capped) under `dir` with a unique name.
+pub(crate) fn spill_artifact(dir: &Path, label: &str, text: &str) -> Option<PathBuf> {
+    std::fs::create_dir_all(dir).ok()?;
+    let name = format!("{label}-{}.txt", &uuid::Uuid::new_v4().simple().to_string()[..8]);
+    let path = dir.join(name);
+    let mut body: String = text.chars().take(MAX_SPILL).collect();
+    if text.chars().count() > MAX_SPILL {
+        body.push_str("\n... [spill capped at 2,000,000 chars] ...");
+    }
+    std::fs::write(&path, body).ok()?;
+    Some(path)
+}
+
+fn truncate_with_pointer(text: &str, head: usize, tail: usize, path: &Path) -> String {
+    let total = text.chars().count();
+    let chars: Vec<char> = text.chars().collect();
+    let head = head.min(total);
+    let tail = tail.min(total.saturating_sub(head));
+    let h: String = chars[..head].iter().collect();
+    let t: String = chars[total - tail..].iter().collect();
+    let dropped = total - head - tail;
+    format!(
+        "{h}\n... [{dropped} chars truncated; full output ({total} chars) saved to {} — \
+         read_file it with offset/limit to see the middle] ...\n{t}",
+        path.display()
+    )
+}
+
 pub(crate) fn schema_obj(props: Value, required: &[&str]) -> Value {
     json!({
         "type": "object",
         "properties": props,
         "required": required.iter().filter(|r| !r.is_empty()).collect::<Vec<_>>(),
     })
+}
+
+/// (mtime_ms, len) for an existing file.
+pub(crate) fn stat_file(p: &Path) -> Option<(u64, u64)> {
+    let md = std::fs::metadata(p).ok()?;
+    let mtime = md
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    Some((mtime, md.len()))
+}
+
+/// Stale-context guard (Cline's tracker, enforced at the mutation gate): a
+/// file that changed on disk since it was last read must be re-read before
+/// editing — the failure direction is an extra round-trip, never a lost
+/// external edit. Reads recorded before the tracker existed are exempt.
+pub(crate) fn stale_check(ctx: &ToolCtx<'_>, key: &Path) -> Result<(), String> {
+    let Some((mtime, len)) = ctx.file_stats.get(key) else {
+        return Ok(());
+    };
+    match stat_file(key) {
+        Some((m2, l2)) if m2 == *mtime && l2 == *len => Ok(()),
+        Some(_) => Err(format!(
+            "{} changed on disk since it was last read (edited outside the harness?); \
+             read_file it again so the edit applies to the current content",
+            key.display()
+        )),
+        // Vanished: the read/write below fails loudly on its own.
+        None => Ok(()),
+    }
 }
 
 #[cfg(test)]
@@ -410,5 +510,38 @@ mod tests {
         let out = truncate_middle(&s, 100, 60, 20);
         assert!(out.contains("chars truncated]"));
         assert!(out.chars().count() < 120);
+    }
+
+    #[test]
+    fn spill_artifact_writes_full_text() {
+        let dir = tempfile::tempdir().unwrap();
+        let text = "x".repeat(50_000);
+        let path = spill_artifact(dir.path(), "bash", &text).expect("spill must succeed");
+        assert!(path.to_string_lossy().contains("bash-"));
+        let on_disk = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(on_disk.chars().count(), 50_000, "nothing may be lost in the spill");
+        let out = truncate_with_pointer(&text, 10, 10, &path);
+        assert!(out.starts_with("xxxxxxxxxx"));
+        assert!(out.ends_with("xxxxxxxxxx"));
+        assert!(out.contains("full output (50000 chars) saved to"));
+        assert!(out.contains(&path.display().to_string()));
+    }
+
+    #[test]
+    fn spill_artifact_fails_cleanly_on_unwritable_dir() {
+        // A directory path whose parent is a regular file cannot be created.
+        let dir = tempfile::tempdir().unwrap();
+        let blocker = dir.path().join("blocker");
+        std::fs::write(&blocker, "i am a file").unwrap();
+        assert!(spill_artifact(&blocker.join("sub"), "bash", "huge").is_none());
+    }
+
+    #[test]
+    fn spill_caps_at_2m_chars() {
+        let dir = tempfile::tempdir().unwrap();
+        let text = "y".repeat(MAX_SPILL + 5_000);
+        let path = spill_artifact(dir.path(), "bash", &text).unwrap();
+        let on_disk = std::fs::read_to_string(&path).unwrap();
+        assert!(on_disk.contains("spill capped at 2,000,000 chars"));
     }
 }

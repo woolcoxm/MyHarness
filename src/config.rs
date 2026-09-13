@@ -38,10 +38,14 @@ struct FileConfig {
     model: Option<FileModel>,
     agent: Option<FileAgent>,
     bash: Option<FileBash>,
+    web: Option<FileWeb>,
     permissions: Option<FilePermissions>,
     hooks: Option<Vec<HookDef>>,
     mcp: Option<Vec<McpServerConfig>>,
     lsp: Option<Vec<LspServerConfig>>,
+    /// `[[output_hint]]` array-of-tables.
+    output_hint: Option<Vec<OutputHintDef>>,
+    zero_mem: Option<crate::zero_mem::ZeroMemCfg>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
@@ -98,6 +102,14 @@ pub struct McpServerConfig {
     pub args: Vec<String>,
 }
 
+/// One output-pattern hint: a distinctive substring to watch for in tool
+/// results and the guidance to inject (throttled) when it appears.
+#[derive(Debug, Clone, Deserialize)]
+pub struct OutputHintDef {
+    pub pattern: String,
+    pub hint: String,
+}
+
 /// One language server: started lazily after the first relevant edit,
 /// diagnostics collected post-edit (errors/warnings only).
 #[derive(Debug, Clone, Deserialize)]
@@ -145,6 +157,13 @@ struct FileBash {
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
+struct FileWeb {
+    /// Allow web_fetch to reach localhost/private destinations (dev
+    /// servers). Off by default: those ranges are the SSRF surface.
+    private_hosts: Option<bool>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
 struct FilePermissions {
     allow: Option<Vec<FileRule>>,
     deny: Option<Vec<FileRule>>,
@@ -189,6 +208,12 @@ pub struct Config {
     pub lsp_servers: Vec<LspServerConfig>,
     pub sandbox: SandboxMode,
     pub data_dir: PathBuf,
+    /// web_fetch may reach localhost/private destinations (SSRF guard knob).
+    pub web_fetch_private_hosts: bool,
+    /// Substring → guidance table fired against tool results (throttled).
+    pub output_hints: Vec<OutputHintDef>,
+    /// Zero-token long-term memory (zero-mem port).
+    pub zero_mem: crate::zero_mem::ZeroMemCfg,
     #[allow(dead_code)] // reserved for verbose diagnostics
     pub verbose: bool,
     /// Non-interactive (-p): no permission prompts can be asked.
@@ -294,6 +319,13 @@ impl Config {
                 SandboxMode::Off
             }),
             data_dir,
+            web_fetch_private_hosts: file.web.as_ref().and_then(|w| w.private_hosts).unwrap_or(false),
+            output_hints: {
+                let mut hints = default_output_hints();
+                hints.extend(file.output_hint.clone().unwrap_or_default());
+                hints
+            },
+            zero_mem: file.zero_mem.unwrap_or_default(),
             verbose: overrides.verbose,
             non_interactive: false,
         })
@@ -406,6 +438,26 @@ fn parse_rule(r: &FileRule) -> Option<Rule> {
     }
 }
 
+/// Built-in output-pattern hints (user [[output_hint]] entries are appended,
+/// not replacing these).
+fn default_output_hints() -> Vec<OutputHintDef> {
+    vec![
+        OutputHintDef {
+            pattern: "API rate limit exceeded".to_string(),
+            hint: "the GitHub API rate limit was hit (5,000/hr, shared across gh and any \
+                   API calls). Run `gh api rate_limit` to see the reset time and switch to \
+                   other work instead of retrying in a loop"
+                .to_string(),
+        },
+        OutputHintDef {
+            pattern: "command not found".to_string(),
+            hint: "that command was not found. Check the spelling and the PATH before \
+                   installing anything"
+                .to_string(),
+        },
+    ]
+}
+
 /// Parse `.env` content: `KEY=VALUE` per line, optional `export ` prefix,
 /// surrounding quotes stripped, `#` comments and blanks ignored. Values may
 /// contain `=`.
@@ -485,6 +537,25 @@ shell = "auto"                  # auto | bash | powershell | cmd
 sandbox = "job"                 # windows: job (kill-on-close containment)
                                 # linux: strict (landlock) | off
 
+[web]
+private_hosts = false           # web_fetch may reach localhost/private
+                                # destinations (dev servers); off = SSRF guard
+
+# Zero-token long-term memory (zero-mem): every turn is captured to a
+# per-project store; deterministic BM25 + entity-graph retrieval injects
+# past-session evidence at turn start. No LLM calls for memory ops.
+[zero_mem]
+enabled = true
+top_k = 3                    # snippets injected per turn
+max_units = 5000             # retention bound
+max_age_days = 180
+
+# Output-pattern hints: a distinctive substring seen in a tool result fires
+# the guidance as a throttled system note (built-ins always apply).
+# [[output_hint]]
+# pattern = "out of memory"
+# hint = "the build ran out of memory; close other tasks or reduce parallelism"
+
 # Lifecycle hooks: JSON payload on stdin; exit code 2 blocks
 # (PreToolUse: deny / Stop: force one more round).
 # [[hooks]]
@@ -520,7 +591,7 @@ pattern = "*.env"
 pub fn summarize(cfg: &Config) -> Result<String> {
     let api = if cfg.api_key.is_some() { "set" } else { "NOT SET" };
     Ok(format!(
-        "provider    : {} ({})\nmodel       : {}\nmodel_fast  : {}\nbase_url    : {}\napi_key     : {}\ntokens      : max {} @ temp {}\nwindow      : {} (compact at {}%)\nturns       : max {}\ncaching     : {}\nwrites      : scoped to workspace {}\nverify_cmd  : {}\nbash        : timeout {}ms, shell {:?}, sandbox {}\nhooks       : {}\nmcp servers : {}\nsessions    : {}",
+        "provider    : {} ({})\nmodel       : {}\nmodel_fast  : {}\nbase_url    : {}\napi_key     : {}\ntokens      : max {} @ temp {}\nwindow      : {} (compact at {}%)\nturns       : max {}\ncaching     : {}\nwrites      : scoped to workspace {}\nverify_cmd  : {}\nbash        : timeout {}ms, shell {:?}, sandbox {}\nweb         : private hosts {}\nzero-mem    : {} units max, memory {}\nhints       : {} output pattern(s)\nhooks       : {}\nmcp servers : {}\nsessions    : {}",
         cfg.provider.name_str(),
         cfg.provider.protocol(),
         cfg.model,
@@ -538,6 +609,10 @@ pub fn summarize(cfg: &Config) -> Result<String> {
         cfg.bash_timeout_ms,
         cfg.shell,
         cfg.sandbox.name(),
+        if cfg.web_fetch_private_hosts { "allowed" } else { "denied (SSRF guard)" },
+        cfg.zero_mem.max_units,
+        if cfg.zero_mem.enabled { "on" } else { "off" },
+        cfg.output_hints.len(),
         cfg.hooks.len(),
         cfg.mcp_servers.iter().map(|m| m.name.as_str()).collect::<Vec<_>>().join(", "),
         cfg.sessions_dir().display(),
@@ -580,5 +655,31 @@ mod tests {
                 ("EMPTY".to_string(), String::new()),
             ]
         );
+    }
+
+    #[test]
+    fn output_hints_and_web_parse_from_toml() {
+        let raw = r#"
+[web]
+private_hosts = true
+
+[[output_hint]]
+pattern = "out of memory"
+hint = "reduce parallelism"
+
+[[output_hint]]
+pattern = ""
+hint = "empty pattern is skipped at scan time"
+"#;
+        let cfg: FileConfig = toml::from_str(raw).unwrap();
+        assert!(cfg.web.as_ref().and_then(|w| w.private_hosts) == Some(true));
+        let hints = cfg.output_hint.unwrap();
+        assert_eq!(hints.len(), 2);
+        assert_eq!(hints[0].pattern, "out of memory");
+
+        let mut merged = default_output_hints();
+        merged.extend(hints);
+        assert!(merged.len() >= 4);
+        assert!(merged.iter().any(|h| h.pattern == "API rate limit exceeded"));
     }
 }

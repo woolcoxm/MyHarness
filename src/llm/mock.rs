@@ -101,6 +101,7 @@ impl Provider for MockProvider {
             let _ = tx.send(Ok(StreamEvent::Usage(super::Usage {
                 input_tokens,
                 output_tokens: text.len() as u64 / 4,
+                ..Default::default()
             }))).await;
             if let Some(think) = thinking {
                 for word in think.split(' ') {
@@ -121,8 +122,13 @@ impl Provider for MockProvider {
                 let _ = tx.send(Ok(StreamEvent::ToolInputDelta(input.to_string()))).await;
                 let _ = tx.send(Ok(StreamEvent::BlockStop)).await;
             }
-            let stop = if tool_calls.is_empty() { "end_turn" } else { "tool_use" };
-            let _ = tx.send(Ok(StreamEvent::MessageDelta { stop_reason: Some(stop.to_string()) })).await;
+            let stop = step["stop_reason"]
+                .as_str()
+                .map(str::to_string)
+                .unwrap_or_else(|| {
+                    if tool_calls.is_empty() { "end_turn".to_string() } else { "tool_use".to_string() }
+                });
+            let _ = tx.send(Ok(StreamEvent::MessageDelta { stop_reason: Some(stop) })).await;
             let _ = tx.send(Ok(StreamEvent::MessageStop)).await;
         });
         Ok(rx)

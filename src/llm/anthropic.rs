@@ -129,8 +129,13 @@ fn map_event(event: Option<&str>, data: &str) -> Vec<StreamEvent> {
     match event {
         Some("message_start") => {
             out.push(StreamEvent::MessageStart);
-            let input = v["message"]["usage"]["input_tokens"].as_u64().unwrap_or(0);
-            out.push(StreamEvent::Usage(super::Usage { input_tokens: input, output_tokens: 0 }));
+            let usage = &v["message"]["usage"];
+            out.push(StreamEvent::Usage(super::Usage {
+                input_tokens: usage["input_tokens"].as_u64().unwrap_or(0),
+                output_tokens: 0,
+                cache_read_tokens: usage["cache_read_input_tokens"].as_u64().unwrap_or(0),
+                cache_creation_tokens: usage["cache_creation_input_tokens"].as_u64().unwrap_or(0),
+            }));
         }
         Some("content_block_start") => {
             if v["content_block"]["type"] == "tool_use" {
@@ -158,7 +163,7 @@ fn map_event(event: Option<&str>, data: &str) -> Vec<StreamEvent> {
         Some("content_block_stop") => out.push(StreamEvent::BlockStop),
         Some("message_delta") => {
             let output = v["usage"]["output_tokens"].as_u64().unwrap_or(0);
-            out.push(StreamEvent::Usage(super::Usage { input_tokens: 0, output_tokens: output }));
+            out.push(StreamEvent::Usage(super::Usage { output_tokens: output, ..Default::default() }));
             out.push(StreamEvent::MessageDelta {
                 stop_reason: v["delta"]["stop_reason"].as_str().map(str::to_string),
             });

@@ -99,6 +99,9 @@ impl Tool for TaskTool {
         let run_in_background = super::opt_bool(&input, "run_in_background")
             .unwrap_or(None)
             .unwrap_or(false);
+        // The subagent's system prompt states the (stable) workspace root;
+        // its actual starting cwd rides the task prompt instead.
+        let prompt = format!("(cwd: {})\n\n{prompt}", ctx.cwd.display());
 
         let registry = crate::tools::Registry::subset(&tool_names);
         if registry.names().is_empty() {

@@ -24,12 +24,28 @@ pub enum Event {
         summary: String,
         /// How many trailing messages were kept after the summary.
         kept: usize,
+        /// Fast-refill streak after this compaction (refill guard; 0 on
+        /// old sessions that predate the field).
+        #[serde(default)]
+        fast_refill_streak: u32,
+        /// Auto-compaction paused after this compaction.
+        #[serde(default)]
+        stalled: bool,
     },
     Todos {
         todos: Vec<Todo>,
     },
     FilesRead {
         files: Vec<String>,
+    },
+    /// Read-guard fingerprints (mtime_ms, len) as of the last read — full
+    /// dump, applied by replace on replay (stale-context tracker).
+    FileStats {
+        stats: Vec<(String, u64, u64)>,
+    },
+    /// AGENTS.md files injected mid-session (JIT loader; append on replay).
+    InstructionsLoaded {
+        paths: Vec<String>,
     },
     /// Journal entries appended during a turn (append semantics).
     Journal {
@@ -38,6 +54,11 @@ pub enum Event {
     /// `/undo` popped this many journal entries.
     Undo {
         count: usize,
+    },
+    /// Oversized tool results replaced with artifact pointers (compaction
+    /// pre-pass). Replay applies the same replacement by tool_use_id.
+    Spill {
+        spills: Vec<(String, String)>,
     },
     Cwd {
         path: String,
@@ -128,19 +149,34 @@ impl Session {
                     }
                 }
                 Event::Message(m) => state.messages.push(m),
-                Event::Compaction { summary, kept } => {
+                Event::Compaction { summary, kept, fast_refill_streak, stalled } => {
                     let kept_msgs: Vec<Message> = state.messages.iter().rev().take(kept).rev().cloned().collect();
                     state.messages.clear();
+                    // Same wrapper text as the live path in agent/mod.rs so
+                    // replay reproduces the identical message.
                     state.messages.push(Message::user_text(format!(
-                        "[Earlier conversation compacted. Handoff summary:]\n{summary}"
+                        "[Earlier conversation was compacted into this handoff summary. Continue from here.]\n\n{summary}"
                     )));
                     state.messages.extend(kept_msgs);
                     state.compacted = true;
+                    state.consecutive_fast_refills = fast_refill_streak;
+                    state.compaction_stalled = stalled;
+                    state.tool_results_since_compact = 0;
                 }
                 Event::Todos { todos } => state.todos = todos,
                 Event::FilesRead { files } => {
                     state.files_read = files.iter().map(PathBuf::from).collect();
                     state.persisted_files_read = state.files_read.clone();
+                }
+                Event::FileStats { stats } => {
+                    state.file_stats = stats
+                        .into_iter()
+                        .map(|(p, m, l)| (PathBuf::from(p), (m, l)))
+                        .collect();
+                    state.persisted_file_stats = state.file_stats.clone();
+                }
+                Event::InstructionsLoaded { paths } => {
+                    state.instructions_loaded.extend(paths.into_iter().map(PathBuf::from));
                 }
                 Event::Journal { entries } => {
                     state.edit_journal.extend(entries);
@@ -154,6 +190,21 @@ impl Session {
                     }
                     state.persisted_journal_len = state.edit_journal.len();
                 }
+                Event::Spill { spills } => {
+                    for m in &mut state.messages {
+                        for b in &mut m.content {
+                            if let crate::llm::ContentBlock::ToolResult { tool_use_id, content, .. } = b {
+                                if let Some((_, path)) = spills.iter().find(|(i, _)| i == tool_use_id) {
+                                    let n = content.chars().count();
+                                    *content = format!(
+                                        "[oversized output ({n} chars) spilled to {path} — \
+                                         read_file it with offset/limit to inspect]"
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
                 Event::Cwd { path } => {
                     let p = PathBuf::from(path);
                     if p.is_dir() {
@@ -165,6 +216,8 @@ impl Session {
                     state.todos.clear();
                     state.files_read.clear();
                     state.persisted_files_read.clear();
+                    state.file_stats.clear();
+                    state.persisted_file_stats.clear();
                     state.usage = Usage::default();
                 }
             }
@@ -215,5 +268,65 @@ impl Session {
         }
         out.sort_by_key(|(_, mtime, ..)| std::cmp::Reverse(*mtime));
         out
+    }
+}
+
+/// A resumed session's cwd can differ from the workspace root the process
+/// was started in; the system prompt only states the (byte-stable) root, so
+/// the actual cwd rides the message stream instead. Persisted, so the next
+/// resume replays the identical transcript. No-op when they match or the
+/// session has no messages yet.
+pub fn cwd_note_if_diverged(state: &mut AgentState, session: &mut Session, root: &std::path::Path) {
+    if state.messages.is_empty() || same_path(&state.cwd, root) {
+        return;
+    }
+    let note = Message::user_text(format!(
+        "(session resumed; working directory: {})",
+        state.cwd.display()
+    ));
+    state.messages.push(note.clone());
+    if let Err(e) = session.append(&Event::Message(note)) {
+        eprintln!("warning: could not persist cwd note: {e}");
+    }
+}
+
+fn same_path(a: &std::path::Path, b: &std::path::Path) -> bool {
+    match (a.canonicalize(), b.canonicalize()) {
+        (Ok(ca), Ok(cb)) => ca == cb,
+        _ => a == b,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn compaction_event_old_format_replays_with_defaults() {
+        // Sessions written before the refill-guard fields must still replay.
+        let ev: Event =
+            serde_json::from_str(r#"{"type":"compaction","summary":"s","kept":1}"#)
+                .expect("old compaction events must deserialize");
+        let events = vec![
+            Event::Message(Message::user_text("a")),
+            Event::Message(Message::user_text("b")),
+            ev,
+        ];
+        let state = Session::replay(events, std::path::PathBuf::from("."));
+        assert!(state.compacted);
+        assert_eq!(state.consecutive_fast_refills, 0);
+        assert!(!state.compaction_stalled);
+        assert_eq!(state.messages.len(), 2); // summary + 1 kept
+    }
+
+    #[test]
+    fn compaction_event_replays_stall_state() {
+        let ev: Event = serde_json::from_str(
+            r#"{"type":"compaction","summary":"s","kept":0,"fast_refill_streak":2,"stalled":true}"#,
+        )
+        .unwrap();
+        let state = Session::replay(vec![ev], std::path::PathBuf::from("."));
+        assert_eq!(state.consecutive_fast_refills, 2);
+        assert!(state.compaction_stalled);
     }
 }

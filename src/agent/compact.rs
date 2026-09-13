@@ -70,6 +70,12 @@ pub fn should_compact(state: &AgentState, system: &str, ratio: f32, window: u64)
     estimate_messages(system, &state.messages) > (ratio as f64 * window as f64) as u64
 }
 
+/// Current estimated context size (system + messages), shared by the
+/// compaction threshold and the TUI context bar.
+pub fn should_compact_size(state: &AgentState, system: &str) -> u64 {
+    estimate_messages(system, &state.messages)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

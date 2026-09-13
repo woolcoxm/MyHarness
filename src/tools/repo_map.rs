@@ -68,6 +68,7 @@ impl Tool for RepoMapTool {
             .clamp(1, 500) as usize;
 
         let cwd_disp = ctx.cwd.clone();
+        let boost_paths: Vec<std::path::PathBuf> = ctx.files_read.iter().cloned().collect();
         let base = base.clone();
         let handle = tokio::task::spawn_blocking(move || {
             // (mtime, display path, symbols, imports)
@@ -108,8 +109,14 @@ impl Tool for RepoMapTool {
                 files.push((mtime, super::display_path(&cwd_disp, path), symbols, imports));
             }
             // Rank: PageRank over resolved imports (most-referenced first),
-            // mtime as the tiebreaker.
-            let ranked = rank_files(&files);
+            // mtime as the tiebreaker. Aider's fit math: files already read
+            // this session score as if referenced 50x (they are "in the
+            // chat"), and important project files pin at the top regardless.
+            let boost: Vec<String> = boost_paths
+                .iter()
+                .map(|p| super::display_path(&cwd_disp, p))
+                .collect();
+            let ranked = rank_files(&files, &boost);
             (ranked, scanned)
         })
         .await;
@@ -123,6 +130,24 @@ impl Tool for RepoMapTool {
         }
         let mut out = String::new();
         let mut listed = 0usize;
+        // Pinned project files (Aider): the handful of files that orient
+        // any reader, even though they carry no extractable symbols.
+        const PINNED: &[&str] = &[
+            "Cargo.toml", "package.json", "go.mod", "pyproject.toml",
+            "Makefile", "README.md", "build.gradle", "pom.xml",
+        ];
+        let mut pinned_lines = Vec::new();
+        for name in PINNED {
+            let p = super::resolve_path(&ctx.cwd, name);
+            if p.is_file() && pinned_lines.len() < 4 {
+                pinned_lines.push(format!("{} (pinned)", super::display_path(&ctx.cwd, &p)));
+            }
+        }
+        for line in &pinned_lines {
+            out.push_str(line);
+            out.push('\n');
+            listed += 1;
+        }
         for (_, path, symbols, _) in files.iter().take(max_entries) {
             let syms: Vec<&str> = symbols.iter().map(|s| s.as_str()).collect();
             let line = format!("{path} — {}", syms.iter().take(MAX_PER_FILE).copied().collect::<Vec<_>>().join(", "));
@@ -384,6 +409,7 @@ fn resolve_import(import: &str, paths: &[String]) -> Vec<usize> {
 /// symbols, imports) sorted most-important-first.
 pub(crate) fn rank_files(
     files: &[(std::time::SystemTime, String, Vec<String>, Vec<String>)],
+    boost: &[String],
 ) -> Vec<(std::time::SystemTime, String, Vec<String>, Vec<String>)> {
     let n = files.len();
     let paths: Vec<String> = files.iter().map(|(_, p, _, _)| p.clone()).collect();
@@ -412,6 +438,13 @@ pub(crate) fn rank_files(
             }
         }
         score = next;
+    }
+    // Aider's in-chat boost: files already read this session are what the
+    // conversation is about — rank them as if referenced 50x.
+    for (j, (_, path, _, _)) in files.iter().enumerate() {
+        if boost.iter().any(|b| b == path) {
+            score[j] *= 50.0;
+        }
     }
     let mut order: Vec<usize> = (0..n).collect();
     order.sort_by(|&a, &b| {
@@ -473,7 +506,7 @@ mod tests {
             (epoch, "src/b.rs".to_string(), vec!["fn b".to_string()], vec!["src/core".to_string()]),
             (epoch + Duration::from_secs(9999), "src/leaf.rs".to_string(), vec!["fn leaf".to_string()], vec![]),
         ];
-        let ranked = rank_files(&files);
+        let ranked = rank_files(&files, &[]);
         assert_eq!(ranked[0].1, "src/core.rs", "most-referenced file first: {:?}", ranked.iter().map(|f| &f.1).collect::<Vec<_>>());
         // Ties (a, b, leaf all score the base rank) break by recency: the
         // newest of them comes next — but never above the referenced core.

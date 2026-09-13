@@ -9,16 +9,60 @@
 use crate::agent::Agent;
 use crate::tools::ToolOutput;
 use anyhow::Result;
+use serde_json::Value;
 use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::sync::mpsc::UnboundedSender;
+
+/// Typed UI events, consumed by the TUI frontend. The stdout sink prints
+/// them, the channel sink serializes them as JSON-RPC notifications
+/// (serve mode), and the events sink hands them to the TUI verbatim.
+#[derive(Debug, Clone)]
+pub enum UiEvent {
+    /// Streamed assistant text delta.
+    Delta(String),
+    /// Streamed model reasoning delta (display-only).
+    Thinking(String),
+    ToolStart { name: String, summary: String, input: Value },
+    ToolEnd { name: String, ok: bool, first: String, images: usize },
+    Info(String),
+    Warn(String),
+    /// A permission prompt was surfaced (TUI answers asynchronously).
+    Ask { tool: String, arg: String },
+    /// One run-to-completion turn finished (cumulative usage + context
+    /// estimate vs window, for the TUI's context bar).
+    TurnEnd { turns: u64, usage: crate::llm::Usage, ctx_est: u64, window: u64 },
+    Banner { model: String, mode: String, session: Option<String> },
+    /// Everything addressable as /<name> (slash commands, skills, command
+    /// files) — palette source for the TUI.
+    Commands { items: Vec<String> },
+}
+
+/// A permission request routed to a frontend that owns the terminal (TUI):
+/// the agent blocks on the oneshot until the user answers.
+pub struct ApprovalRequest {
+    pub tool: String,
+    pub arg: String,
+    pub respond: tokio::sync::oneshot::Sender<ApprovalAnswer>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApprovalAnswer {
+    /// Allow this one call.
+    Once,
+    /// Allow and remember a session rule (like REPL "always").
+    Always,
+    Deny,
+}
 
 #[derive(Debug, Clone)]
 pub struct Ui {
     pub quiet: bool,
     /// serve mode: events are emitted as JSON-RPC notification lines.
     pub channel: Option<UnboundedSender<String>>,
+    /// tui mode: events are emitted typed for the frontend to render.
+    pub events: Option<UnboundedSender<UiEvent>>,
     at_line_start: bool,
     /// A thinking run just printed without a trailing newline; the next
     /// real output starts on a fresh line.
@@ -39,16 +83,21 @@ fn notify(tx: &UnboundedSender<String>, method: &str, params: &str) {
 
 impl Ui {
     pub fn new() -> Self {
-        Ui { quiet: false, channel: None, at_line_start: true, thinking_open: false }
+        Ui { quiet: false, channel: None, events: None, at_line_start: true, thinking_open: false }
     }
 
     pub fn quiet() -> Self {
-        Ui { quiet: true, channel: None, at_line_start: true, thinking_open: false }
+        Ui { quiet: true, channel: None, events: None, at_line_start: true, thinking_open: false }
     }
 
     /// serve mode: all events become JSON notification lines on the channel.
     pub fn channel(tx: UnboundedSender<String>) -> Self {
-        Ui { quiet: true, channel: Some(tx), at_line_start: true, thinking_open: false }
+        Ui { quiet: true, channel: Some(tx), events: None, at_line_start: true, thinking_open: false }
+    }
+
+    /// tui mode: all events are sent typed on the channel.
+    pub fn events(tx: UnboundedSender<UiEvent>) -> Self {
+        Ui { quiet: true, channel: None, events: Some(tx), at_line_start: true, thinking_open: false }
     }
 
     fn out(&mut self, s: &str) {
@@ -68,6 +117,10 @@ impl Ui {
 
     /// Streamed assistant text: printed as it arrives.
     pub fn assistant_delta(&mut self, s: &str) {
+        if let Some(tx) = &self.events {
+            let _ = tx.send(UiEvent::Delta(s.to_string()));
+            return;
+        }
         if let Some(tx) = &self.channel {
             notify(tx, "mh/turn.delta", &format!("{{\"text\":{}}}", serde_json::json!(s)));
             return;
@@ -87,6 +140,10 @@ impl Ui {
     /// Streamed model reasoning: shown with a `~` prefix so the operator can
     /// watch the model think; never enters the context.
     pub fn thinking_delta(&mut self, s: &str) {
+        if let Some(tx) = &self.events {
+            let _ = tx.send(UiEvent::Thinking(s.to_string()));
+            return;
+        }
         if let Some(tx) = &self.channel {
             notify(tx, "mh/turn.thinking", &format!("{{\"text\":{}}}", serde_json::json!(s)));
             return;
@@ -109,7 +166,15 @@ impl Ui {
         self.ensure_newline();
     }
 
-    pub fn tool_start(&mut self, name: &str, summary: &str) {
+    pub fn tool_start(&mut self, name: &str, summary: &str, input: &Value) {
+        if let Some(tx) = &self.events {
+            let _ = tx.send(UiEvent::ToolStart {
+                name: name.to_string(),
+                summary: summary.to_string(),
+                input: input.clone(),
+            });
+            return;
+        }
         if let Some(tx) = &self.channel {
             notify(
                 tx,
@@ -135,6 +200,16 @@ impl Ui {
     }
 
     pub fn tool_end(&mut self, name: &str, result: &ToolOutput) {
+        let first = result.content.lines().next().unwrap_or("").chars().take(120).collect::<String>();
+        if let Some(tx) = &self.events {
+            let _ = tx.send(UiEvent::ToolEnd {
+                name: name.to_string(),
+                ok: !result.is_error,
+                first,
+                images: result.images.len(),
+            });
+            return;
+        }
         if let Some(tx) = &self.channel {
             let first = result.content.lines().next().unwrap_or("").chars().take(120).collect::<String>();
             notify(
@@ -167,6 +242,10 @@ impl Ui {
     }
 
     pub fn permission_ask(&mut self, name: &str, arg: &str) {
+        if let Some(tx) = &self.events {
+            let _ = tx.send(UiEvent::Ask { tool: name.to_string(), arg: arg.to_string() });
+            return;
+        }
         if self.channel.is_some() || self.quiet {
             return;
         }
@@ -178,6 +257,10 @@ impl Ui {
     }
 
     pub fn info(&mut self, s: &str) {
+        if let Some(tx) = &self.events {
+            let _ = tx.send(UiEvent::Info(s.to_string()));
+            return;
+        }
         if let Some(tx) = &self.channel {
             notify(tx, "mh/info", &format!("{{\"text\":{}}}", serde_json::json!(s)));
             return;
@@ -187,6 +270,10 @@ impl Ui {
     }
 
     pub fn warn(&mut self, s: &str) {
+        if let Some(tx) = &self.events {
+            let _ = tx.send(UiEvent::Warn(s.to_string()));
+            return;
+        }
         if let Some(tx) = &self.channel {
             notify(tx, "mh/warn", &format!("{{\"text\":{}}}", serde_json::json!(s)));
             return;
@@ -199,20 +286,53 @@ impl Ui {
         println!("!! {s}");
     }
 
-    pub fn turn_footer(&mut self, turns: u64, input_tokens: u64, output_tokens: u64) {
+    /// Tell the TUI which /<name> commands exist (slash + skills + files).
+    pub fn commands(&mut self, items: &[String]) {
+        if let Some(tx) = &self.events {
+            let _ = tx.send(UiEvent::Commands { items: items.to_vec() });
+        }
+    }
+
+    pub fn turn_footer(&mut self, turns: u64, usage: &crate::llm::Usage, ctx_est: u64, window: u64) {
+        if let Some(tx) = &self.events {
+            let _ = tx.send(UiEvent::TurnEnd {
+                turns,
+                usage: *usage,
+                ctx_est,
+                window,
+            });
+            return;
+        }
         if self.channel.is_some() || self.quiet {
             return;
         }
         self.ensure_newline();
+        let cache = if usage.cache_read_tokens > 0 || usage.cache_creation_tokens > 0 {
+            format!(
+                " (cache: {} read, {} write)",
+                format_tokens(usage.cache_read_tokens),
+                format_tokens(usage.cache_creation_tokens)
+            )
+        } else {
+            String::new()
+        };
         println!(
-            "-- turn {turns} | {in_tok} in / {out_tok} out (cumulative)",
-            in_tok = format_tokens(input_tokens),
-            out_tok = format_tokens(output_tokens),
+            "-- turn {turns} | {} in{cache} / {} out (cumulative)",
+            format_tokens(usage.input_tokens),
+            format_tokens(usage.output_tokens),
         );
         println!();
     }
 
     pub fn banner(&mut self, model: &str, mode: &str, session: Option<&str>) {
+        if let Some(tx) = &self.events {
+            let _ = tx.send(UiEvent::Banner {
+                model: model.to_string(),
+                mode: mode.to_string(),
+                session: session.map(str::to_string),
+            });
+            return;
+        }
         if self.channel.is_some() || self.quiet {
             return;
         }
@@ -315,12 +435,15 @@ pub async fn repl(mut agent: Agent) -> Result<()> {
 }
 
 #[derive(PartialEq)]
-enum SlashResult {
+pub enum SlashResult {
     Continue,
     Quit,
 }
 
-async fn handle_slash(agent: &mut Agent, cmd: &str) -> SlashResult {
+/// Shared slash-command handler (REPL and TUI frontends). Unknown `/name`
+/// falls through to skills and `.agents/commands` templates by running a
+/// turn; output rides the Ui events either way.
+pub async fn handle_slash(agent: &mut Agent, cmd: &str) -> SlashResult {
     let mut parts = cmd.split_whitespace();
     let name = parts.next().unwrap_or("");
     let arg = parts.next().unwrap_or("");
@@ -329,7 +452,7 @@ async fn handle_slash(agent: &mut Agent, cmd: &str) -> SlashResult {
         "help" | "h" | "?" => agent.ui.out(HELP),
         "clear" => agent.clear(),
         "compact" => {
-            if let Err(e) = agent.compact_now().await {
+            if let Err(e) = agent.compact_now(true).await {
                 agent.ui.warn(&format!("compaction failed: {e}"));
             }
         }
@@ -379,9 +502,11 @@ async fn handle_slash(agent: &mut Agent, cmd: &str) -> SlashResult {
         "usage" => {
             let u = &agent.state.usage;
             agent.ui.info(&format!(
-                "requests: {} | tokens in: {} | tokens out: {} | turns: {} | compacted: {}",
+                "requests: {} | tokens in: {} (cache: {} read, {} write) | tokens out: {} | turns: {} | compacted: {}",
                 agent.state.requests,
                 u.input_tokens,
+                u.cache_read_tokens,
+                u.cache_creation_tokens,
                 u.output_tokens,
                 agent.state.turns,
                 agent.state.compacted
@@ -399,6 +524,40 @@ async fn handle_slash(agent: &mut Agent, cmd: &str) -> SlashResult {
                 agent.state.files_read.len(),
                 agent.session.as_ref().map(|s| s.path.display().to_string()).unwrap_or_else(|| "(none)".to_string()),
             ));
+        }
+        "memory" => {
+            let rest = cmd.strip_prefix(name).unwrap_or("").trim();
+            if rest == "clear" {
+                match agent.zero_mem.as_mut() {
+                    Some(zm) => {
+                        zm.clear();
+                        agent.ui.info("zero-mem store cleared");
+                    }
+                    None => agent.ui.info("zero-mem is disabled"),
+                }
+            } else if let Some(q) = rest.strip_prefix("search ") {
+                match agent.zero_mem.as_ref() {
+                    Some(zm) => {
+                        let hits = zm.retrieve(q, &std::collections::HashSet::new());
+                        if hits.is_empty() {
+                            agent.ui.info(&format!("no memories match '{q}'"));
+                        } else {
+                            for h in hits {
+                                agent.ui.info(&format!(
+                                    "({} days ago, {}) {}",
+                                    h.when, h.role, h.snippet
+                                ));
+                            }
+                        }
+                    }
+                    None => agent.ui.info("zero-mem is disabled"),
+                }
+            } else {
+                match agent.zero_mem.as_ref() {
+                    Some(zm) => agent.ui.info(&zm.status()),
+                    None => agent.ui.info("zero-mem is disabled ([zero_mem] enabled = false)"),
+                }
+            }
         }
         "session" => {
             agent.ui.info(&agent

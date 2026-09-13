@@ -2,7 +2,7 @@
 //! text; JSON and plain text pass through. The model gets to check docs,
 //! error messages, and package pages without leaving the harness.
 
-use super::{schema_obj, truncate_middle, Tool, ToolCtx, ToolOutput};
+use super::{budget_output, schema_obj, truncate_middle, Tool, ToolCtx, ToolOutput};
 use crate::llm::{LlmRequest, Message};
 use async_trait::async_trait;
 use futures_util::StreamExt;
@@ -24,7 +24,7 @@ impl Tool for WebFetchTool {
     }
 
     fn description(&self) -> &'static str {
-        "Fetches an HTTP(S) URL and returns readable text: HTML is converted to text (scripts/styles dropped), JSON and plain text pass through, everything is capped at ~20k chars. Pass `prompt` to instead get a specific question answered against the page by the fast model — far cheaper on context than reading a long page. Use it to check documentation, error messages, and API references. Redirects are followed automatically."
+        "Fetches an HTTP(S) URL and returns readable text: HTML is converted to text (scripts/styles dropped), JSON and plain text pass through, everything is capped at ~20k chars (huge pages are head+tail truncated with the full text saved to a file you can read_file). Pass `prompt` to instead get a specific question answered against the page by the fast model — far cheaper on context than reading a long page. Private/localhost destinations are denied (SSRF guard). Redirects are NOT followed: a 3xx returns the Location for you to fetch directly. Use it to check documentation, error messages, and API references."
     }
 
     fn schema(&self) -> Value {
@@ -68,10 +68,15 @@ impl Tool for WebFetchTool {
             Ok(u) => u,
             Err(e) => return ToolOutput::err(e.to_string()),
         };
-        if !url.starts_with("http://") && !url.starts_with("https://") {
-            return ToolOutput::err("url must start with http:// or https://");
+        // Destination guard: credentials always deny; private/local hosts
+        // deny unless the config knob allows them (SSRF guard).
+        let allow_private = ctx.cfg.web_fetch_private_hosts;
+        if let Err(e) = super::net_guard::guard(&url, allow_private).await {
+            return ToolOutput::err(format!("web_fetch blocked: {e}"));
         }
+        // Redirects are returned, not followed — every hop re-guards.
         let client = match reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
             .timeout(std::time::Duration::from_secs(30))
             .user_agent(concat!("myharness/", env!("CARGO_PKG_VERSION")))
             .build()
@@ -84,6 +89,35 @@ impl Tool for WebFetchTool {
             Err(e) => return ToolOutput::err(format!("request failed: {e}")),
         };
         let status = resp.status();
+        if status.is_redirection() {
+            let location = resp
+                .headers()
+                .get(reqwest::header::LOCATION)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            if location.is_empty() {
+                return ToolOutput::err(format!(
+                    "HTTP {} with no Location header; cannot follow",
+                    status.as_u16()
+                ));
+            }
+            // Pre-check the destination so a bad redirect is named as such.
+            if location.contains("://") {
+                if let Err(e) = super::net_guard::guard(&location, allow_private).await {
+                    return ToolOutput::err(format!(
+                        "HTTP {} redirects to {location}, and that destination is blocked: {e}",
+                        status.as_u16()
+                    ));
+                }
+            }
+            return ToolOutput::ok(format!(
+                "HTTP {} — redirects are not followed automatically. Location: {location}\n\
+                 Fetch that URL directly if you need it.",
+                status.as_u16()
+            ));
+        }
         if !status.is_success() {
             return ToolOutput::err(format!("HTTP {}", status.as_u16()));
         }
@@ -150,7 +184,7 @@ impl Tool for WebFetchTool {
                 };
             }
         }
-        let mut out = truncate_middle(text.trim(), MAX_TEXT, 15_000, 3_000);
+        let mut out = budget_output(ctx, "web_fetch", text.trim(), MAX_TEXT, 15_000, 3_000);
         if truncated {
             out.push_str("\n... [download capped at 2 MB] ...");
         }

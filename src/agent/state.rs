@@ -88,8 +88,23 @@ pub struct AgentState {
     pub turns: u64,
     pub compacted: bool,
     pub limit_notice_sent: bool,
+    /// Tool-result messages pushed since the last compaction (refill guard).
+    pub tool_results_since_compact: u64,
+    /// Consecutive compactions that refilled within a few tool results.
+    pub consecutive_fast_refills: u32,
+    /// Auto-compaction paused: the context refills too fast (one result is
+    /// too large to carry). Manual /compact clears it.
+    pub compaction_stalled: bool,
     /// Repo instructions from the nearest AGENTS.md (capped).
     pub project_context: Option<String>,
+    /// Its path (canonicalized) so JIT discovery can skip it.
+    pub project_context_path: Option<PathBuf>,
+    /// AGENTS.md files injected mid-session by the JIT loader (canonical).
+    pub instructions_loaded: Vec<PathBuf>,
+    /// Read-guard fingerprints: (mtime_ms, len) as of the last read.
+    pub file_stats: HashMap<PathBuf, (u64, u64)>,
+    /// Mirror of file_stats as last persisted, so we only write on change.
+    pub persisted_file_stats: HashMap<PathBuf, (u64, u64)>,
     /// One-glance repository layout for the system prompt.
     pub repo_layout: Option<String>,
     /// Discovered SKILL.md packs (user + workspace `.agents/skills`).
@@ -190,7 +205,9 @@ pub fn build_repo_layout(root: &std::path::Path) -> Option<String> {
 impl AgentState {
     pub fn new(workspace_root: PathBuf) -> Self {
         let cwd = workspace_root.clone();
-        let project_context = load_project_context(&cwd).map(|(_, c)| c);
+        let (project_context_path, project_context) = load_project_context(&cwd)
+            .map(|(p, c)| (p.canonicalize().ok(), Some(c)))
+            .unwrap_or((None, None));
         let repo_layout = build_repo_layout(&cwd);
         let skills = crate::skills::discover(&cwd);
         let commands = crate::commands::discover(&cwd);
@@ -210,7 +227,14 @@ impl AgentState {
             turns: 0,
             compacted: false,
             limit_notice_sent: false,
+            tool_results_since_compact: 0,
+            consecutive_fast_refills: 0,
+            compaction_stalled: false,
             project_context,
+            project_context_path,
+            instructions_loaded: Vec::new(),
+            file_stats: HashMap::new(),
+            persisted_file_stats: HashMap::new(),
             repo_layout,
             skills,
             commands,

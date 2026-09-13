@@ -53,6 +53,11 @@ impl Tool for WriteFileTool {
                 display_path(&ctx.cwd, &resolved)
             ));
         }
+        if resolved.exists() {
+            if let Err(msg) = super::stale_check(ctx, &key) {
+                return ToolOutput::err(msg);
+            }
+        }
         if let Some(parent) = resolved.parent() {
             if let Err(e) = std::fs::create_dir_all(parent) {
                 return ToolOutput::err(format!("cannot create directory {}: {e}", parent.display()));
@@ -64,7 +69,10 @@ impl Tool for WriteFileTool {
         if let Err(e) = std::fs::write(&resolved, content.as_bytes()) {
             return ToolOutput::err(format!("write failed: {e}"));
         }
-        ctx.effects.files_read.push(key);
+        ctx.effects.files_read.push(key.clone());
+        if let Some((m, l)) = super::stat_file(&resolved) {
+            ctx.effects.file_stats.push((key, m, l));
+        }
         ToolOutput::ok(format!(
             "Wrote {} lines to {}",
             lines,

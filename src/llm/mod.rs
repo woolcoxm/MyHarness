@@ -89,12 +89,23 @@ impl Message {
 pub struct Usage {
     pub input_tokens: u64,
     pub output_tokens: u64,
+    /// Input tokens served from the prompt cache (billed far below fresh
+    /// input). Anthropic `cache_read_input_tokens`; OpenAI
+    /// `prompt_tokens_details.cached_tokens`. Defaults to 0 for old sessions.
+    #[serde(default)]
+    pub cache_read_tokens: u64,
+    /// Input tokens written to the prompt cache (billed at a small premium).
+    /// Anthropic `cache_creation_input_tokens`.
+    #[serde(default)]
+    pub cache_creation_tokens: u64,
 }
 
 impl Usage {
     pub fn add(&mut self, other: Usage) {
         self.input_tokens += other.input_tokens;
         self.output_tokens += other.output_tokens;
+        self.cache_read_tokens += other.cache_read_tokens;
+        self.cache_creation_tokens += other.cache_creation_tokens;
     }
 }
 

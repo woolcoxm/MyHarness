@@ -1,6 +1,7 @@
-//! todo_write: replaces the whole task list. The list is injected into the
-//! system prompt every request, which keeps multi-step work anchored when the
-//! context grows.
+//! todo_write: replaces the whole task list. The new list is echoed back in
+//! the tool result (in-band, so it never invalidates the prompt-cache
+//! prefix), and compaction folds the current list into the handoff summary —
+//! multi-step work stays anchored without re-sending it every request.
 
 use super::{Tool, ToolCtx, ToolOutput};
 use crate::agent::state::Todo;

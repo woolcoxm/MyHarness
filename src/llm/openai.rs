@@ -154,6 +154,10 @@ impl Provider for OpenAiProvider {
                                 let _ = tx.send(Ok(StreamEvent::Usage(super::Usage {
                                     input_tokens: usage["prompt_tokens"].as_u64().unwrap_or(0),
                                     output_tokens: usage["completion_tokens"].as_u64().unwrap_or(0),
+                                    cache_read_tokens: usage["prompt_tokens_details"]["cached_tokens"]
+                                        .as_u64()
+                                        .unwrap_or(0),
+                                    ..Default::default()
                                 }))).await;
                             }
                             let Some(choice) = v["choices"].get(0) else { continue };

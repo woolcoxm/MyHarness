@@ -81,7 +81,11 @@ impl Tool for ReadFileTool {
             }
             Err(e) => return ToolOutput::err(format!("cannot read {}: {e}", resolved.display())),
         };
-        ctx.effects.files_read.push(canon(&ctx.cwd, &path));
+        let key = canon(&ctx.cwd, &path);
+        ctx.effects.files_read.push(key.clone());
+        if let Some((m, l)) = super::stat_file(&key) {
+            ctx.effects.file_stats.push((key, m, l));
+        }
 
         // Images: return as image blocks.
         if let Some(media_type) = image_media_type(&resolved) {

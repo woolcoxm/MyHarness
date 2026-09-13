@@ -1,3 +1,26 @@
-/target
-*.pdb
+# --- secrets (NEVER commit) ---
 .env
+.env.local
+.env.*.local
+*.pem
+*.key
+
+# --- rust build artifacts ---
+/target
+**/*.rs.bk
+
+# --- harness runtime data (never belongs in a repo) ---
+/data
+.myharness/
+*.jsonl.sessions
+artifacts/
+checkpoints/
+
+# --- os / editor junk ---
+.DS_Store
+Thumbs.db
+desktop.ini
+*.swp
+*~
+.idea/
+.vscode/

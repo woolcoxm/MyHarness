@@ -65,6 +65,9 @@ impl Tool for EditFileTool {
                 display_path(&ctx.cwd, &resolved)
             ));
         }
+        if let Err(msg) = super::stale_check(ctx, &key) {
+            return ToolOutput::err(msg);
+        }
         let content = match std::fs::read_to_string(&resolved) {
             Ok(c) => c,
             Err(e) => return ToolOutput::err(format!("cannot read {}: {e}", resolved.display())),
@@ -91,6 +94,9 @@ impl Tool for EditFileTool {
         ctx.effects.journal.push(super::snapshot_for_journal(ctx, &resolved));
         if let Err(e) = std::fs::write(&resolved, updated.as_bytes()) {
             return ToolOutput::err(format!("write failed: {e}"));
+        }
+        if let Some((m, l)) = super::stat_file(&resolved) {
+            ctx.effects.file_stats.push((key, m, l));
         }
         ToolOutput::ok(format!(
             "Replaced {} occurrence(s) in {} (now {} lines)",

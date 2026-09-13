@@ -1,6 +1,6 @@
 [package]
 name = "myharness"
-version = "0.13.0"
+version = "0.18.0"
 edition = "2021"
 description = "A terminal coding-agent harness for GLM, designed around the contract the model itself wants."
 license = "MIT"
@@ -27,6 +27,8 @@ ignore = "0.4"
 glob = "0.3"
 dirs = "5"
 base64 = "0.22"
+ratatui = { version = "0.30", default-features = false, features = ["crossterm"] }
+crossterm = { version = "0.29", features = ["bracketed-paste", "event-stream"] }
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.58", features = ["Win32_System_JobObjects", "Win32_System_Threading", "Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Security_Isolation", "Win32_System_Pipes", "Win32_Storage_FileSystem"] }

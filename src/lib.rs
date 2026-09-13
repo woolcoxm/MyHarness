@@ -40,4 +40,6 @@ pub mod server;
 pub mod session;
 pub mod skills;
 pub mod tools;
+pub mod tui;
 pub mod ui;
+pub mod zero_mem;

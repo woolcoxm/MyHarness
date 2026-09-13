@@ -2,7 +2,7 @@
 //! `bash(run_in_background=true)` — running state, exit code, and the tail
 //! of its captured output.
 
-use super::{opt_u64, schema_obj, truncate_middle, Tool, ToolCtx, ToolOutput};
+use super::{budget_output, opt_u64, schema_obj, Tool, ToolCtx, ToolOutput};
 use async_trait::async_trait;
 use serde_json::{json, Value};
 
@@ -17,7 +17,7 @@ impl Tool for BashOutputTool {
     }
 
     fn description(&self) -> &'static str {
-        "Returns the status and output of a background task — a bash command started with run_in_background=true, or a subagent started with task run_in_background=true (its final report arrives here). If the task is still running you get the output so far — keep working and poll again later. For bash tasks the pid is included so you can kill a stuck one via bash (taskkill /PID <pid> /T /F on Windows, kill on Unix)."
+        "Returns the status and output of a background task — a bash command started with run_in_background=true, or a subagent started with task run_in_background=true (its final report arrives here). If the task is still running you get the output so far — keep working and poll again later. Huge output is head+tail truncated with the full text saved to a file you can read_file for the middle. For bash tasks the pid is included so you can kill a stuck one via bash (taskkill /PID <pid> /T /F on Windows, kill on Unix)."
     }
 
     fn schema(&self) -> Value {
@@ -67,7 +67,7 @@ impl Tool for BashOutputTool {
                 task.command.chars().take(120).collect::<String>(),
                 task.pid.map(|p| p.to_string()).unwrap_or_else(|| "?".into()),
                 task.started.format("%H:%M:%S"),
-                truncate_middle(&output, MAX_REPORT, 4_000, 14_000).trim_end()
+                budget_output(ctx, "bash_output", &output, MAX_REPORT, 4_000, 14_000).trim_end()
             )
         };
         if running {

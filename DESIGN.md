@@ -48,7 +48,7 @@ A single static Rust binary (`myharness`) providing:
 |---|---|
 | `llm/` | Unified message IR + `Provider` trait. Streaming clients for **Anthropic Messages** (`/v1/messages`, SSE) and **OpenAI chat-completions** (`/chat/completions`, SSE tool-call accumulation), plus a scripted `mock` provider for offline tests. Retries with backoff on 429/5xx/network errors, `Retry-After` honored. Tool-result **images** ride the IR as base64 blocks (anthropic protocol; openai degrades to a text note). |
 | `tools/` | Fourteen tools: `read_file` (text + images), `write_file`, `edit_file`, `bash` (persistent cwd, timeouts, **background tasks**), `bash_output` (poll background tasks), `glob`, `grep`, `ls`, `todo_write`, `skill` (SKILL.md packs), `task` (subagents), `web_fetch`, `web_search` (keyless DDG), `repo_map` (symbol digest). Contracts detailed below. |
-| `agent/` | The turn loop (request → stream → tool calls → results → repeat), system prompt (static contract + dynamic state: cwd, todos), token estimation, threshold compaction with handoff summaries (optionally routed to a cheaper `model_fast`). Tools collect **side-effects** that the agent merges after execution, which lets concurrency-safe calls fan out **in parallel**. |
+| `agent/` | The turn loop (request → stream → tool calls → results → repeat), system prompt (byte-stable for the session: base contract + project context only — volatile state like cwd/todo updates rides the message stream so the prompt-cache prefix never invalidates), token estimation, threshold compaction with handoff summaries (optionally routed to a cheaper `model_fast`). Tools collect **side-effects** that the agent merges after execution, which lets concurrency-safe calls fan out **in parallel**. |
 | `perms/` | Modes `plan / ask / auto-edit / yolo`; deny→allow→prompt rule engine with glob patterns; **compound-command decomposition** for bash rules; non-interactive fail-closed. |
 | `session.rs` | JSONL event-sourced transcripts (message / compaction / todos / **files_read** / cwd / clear events); replay-based resume including the read-before-edit guard set. |
 | `config.rs`, `cli.rs`, `ui.rs` | Layered config (defaults ← `myharness.toml` ← env ← CLI), clap CLI (`-p`, `--mode`, `--yolo`, `-c`, `sessions`, `config`, `resume`), and a line-oriented ASCII REPL with slash commands. |
@@ -66,7 +66,8 @@ A single static Rust binary (`myharness`) providing:
 - **`write_file`** → refuses to overwrite an unread file (the #1 way agents
   destroy work). New files create parent directories.
 - **`bash`** → persistent working directory (a `__MH_CWD__` marker line reports
-  the post-command cwd back to the harness; `cd` sticks), timeouts with
+  the post-command cwd back to the harness; `cd` sticks and the result notes
+  `(cwd: …)` when it actually changed), timeouts with
   process-tree kills (`taskkill /T /F` on Windows), 30k head+tail truncation,
   exit code always reported, user-interrupt kills mid-command.
   **`run_in_background`** starts the command without waiting; the model keeps
@@ -85,8 +86,10 @@ A single static Rust binary (`myharness`) providing:
   configured `model_fast` and only the answer comes back — query-focused
   extraction instead of a 20k-char page dump. Documentation and
   error-message lookups without leaving the harness.
-- **`todo_write`** → full-list replacement; injected into every system prompt
-  so the plan survives context growth; one-`in_progress` rule enforced.
+- **`todo_write`** → full-list replacement; the new list is echoed in the tool
+  result and folded into the compaction handoff, so the plan survives context
+  growth without re-sending it in every request (which would invalidate the
+  prompt cache); one-`in_progress` rule enforced.
 - **`skill`** → loads a discovered SKILL.md instruction pack by exact name
   (frontmatter `name`/`description`, markdown body). Skills are discovered
   from the user's `~/.agents/skills/` and the workspace's
@@ -211,7 +214,7 @@ Asked the same question again and found a different class of gaps:
 | Feature | Why |
 |---|---|
 | **Thinking/reasoning streams** | v0.2 *silently discarded* GLM reasoning output (`reasoning_content` on the OpenAI protocol, `thinking_delta` on the Anthropic one). Now streamed to the operator with a `~` prefix, and deliberately never fed back into the context (providers reject it on input). A correctness fix, not a feature. |
-| **Prompt caching** | Anthropic-protocol `cache_control` breakpoints on tools + system + last message (3 of 4 allowed). Long sessions stop re-paying the full input cost every request. On by default, configurable. |
+| **Prompt caching** | Anthropic-protocol `cache_control` breakpoints on tools + system + last message (3 of 4 allowed). Long sessions stop re-paying the full input cost every request. On by default, configurable. The system prompt is kept byte-stable for the session (cwd/todo updates ride the message stream) so the tools+system+history prefix never invalidates mid-session; cache read/write tokens are tracked in `Usage` and shown in the turn footer and `/usage` so cache-busting is visible. |
 | **AGENTS.md injection** | Repo instructions (nearest AGENTS.md upward, capped at 8k chars) are appended to the system prompt — per-project conventions finally reach the model. |
 | **Auto-verify after edits** | Opt-in `verify_cmd` (e.g. `cargo check`) runs after any write/edit turn and the result is injected as the next user message, so the model sees compile/test failures immediately instead of forgetting to check. Synchronous and bounded by the bash timeout — long checks belong in background bash. |
 | **Workspace write-scoping** | In unattended modes (auto-edit/yolo), write_file/edit_file outside the workspace root are denied with guidance; ask-mode still allows explicit user approval. The remaining sandbox hole is bash, which needs OS-level work (Roadmap #1). |
@@ -227,7 +230,7 @@ user input ──▶ push User message (persist)
         ┌────────────────────────────────────────────┐
         │ estimate tokens; if over threshold:        │
         │   summarize → handoff msg + 6-msg tail     │  (persist compaction)
-        │ build request (system + todos, tools)      │
+        │ build request (stable system, tools)       │
         │ stream response; print text deltas live    │
         │ collect text blocks + tool_use blocks      │  (persist assistant)
         │ no tool calls? ──▶ done: final message     │
@@ -268,7 +271,7 @@ tests/integration.rs 11 end-to-end scenarios on the mock provider
 
 ### Testing strategy
 
-- **80 automated tests**, zero network: 41 unit + 39 integration (the v0.13
+- **141 automated tests**, zero network: 90 unit + 51 integration (the v0.13
   addition drives three serve processes over stdio: implicit session
   creation with session_id in the turn.run response, attach-by-id resume
   with the replayed message count, same-session continuation, and the
@@ -547,3 +550,326 @@ writer could never see the channel close, so the process hung on exit;
 (2) the lazy-session ensure used two lock acquisitions, and shutdown
 could swap the UI to quiet between them, silently eating the turn's
 delta notifications. The fix is one lock held from ensure through run.
+
+## v0.14 — the token-efficiency round
+
+The audit question changed from "does it work?" to "what does a request cost?"
+Three findings, all fixed:
+
+1. **The system prompt was a cache-buster.** `build_system` embedded the todo
+   list and the live cwd, and the prompt-cache prefix runs tools → system →
+   messages: every `todo_write`/`cd` invalidated the *entire* cached
+   conversation and re-billed it as a cache write (1.25x). The prompt is now
+   byte-stable for the session (OS + workspace root + AGENTS.md + skills +
+   layout). Volatile state rides the append-only message stream instead:
+   `todo_write` already echoed the list in its tool result (the system-prompt
+   copy was pure duplication), `bash` notes `(cwd: …)` in its result when a
+   cd actually changed it, and compaction folds the current todo list into
+   the persisted handoff summary so the plan survives context resets and
+   resumes replay-identically.
+2. **The system prompt restated the tools' own descriptions** (read_file
+   format, edit_file failure modes, bash truncation...) — double spend on
+   every request since tools serialize right alongside. BASE_PROMPT now
+   states only what sits on top of the per-tool contracts, plus explicit
+   token-discipline rules (read ranges, grep `files`/`count` modes, no
+   restating tool output in prose) that attack output tokens — the most
+   expensive class.
+3. **Cache efficiency was invisible.** `Usage` now tracks
+   `cache_read_tokens` / `cache_creation_tokens` (Anthropic
+   `cache_read_input_tokens`/`cache_creation_input_tokens`, OpenAI
+   `prompt_tokens_details.cached_tokens`; serde-defaulted so old sessions
+   replay), shown in the turn footer and `/usage`. A session that busts its
+   cache now shows it as cache-write tokens climbing instead of reads.
+
+Plus one small green-path win: a clean `verify_cmd` run reports one line
+instead of the empty stdout/stderr header scaffold.
+
+## v0.15 — the decompile round
+
+v0.6 ported what ZCode shows the model from the model's seat. This round
+came from decompiling its CLI bundle (`zcode-re/IDEAS-for-myharness.md` has
+the ranked analysis; ideas only, nothing vendored). Five features, shipped
+smallest-first; all compose with each other and with the v0.14
+token-efficiency work.
+
+### 1. Egress destination guard (`tools/net_guard.rs`, new)
+
+`web_fetch` gated *whether* egress happens (approval, since v0.5) but never
+looked at *where* — a prompt-injected model could aim a GET at
+`http://localhost:PORT/…`, `169.254.169.254`, or an internal `10.x` service,
+and reqwest followed redirects automatically, so a "safe" public URL could
+hop somewhere private.
+
+A shared `guard` now runs before the request: URLs carrying credentials
+always deny (a secret in a URL becomes a secret in the transcript); the
+host is resolved (literal IPs checked DNS-free, hostnames on the blocking
+pool) and **every** address must be public — loopback, unspecified, private
+(10/8, 172.16/12, 192.168/16), link-local (169.254/16, the cloud-metadata
+range; fe80::/10), CGNAT (100.64/10), documentation ranges, ULA (fc00::/7),
+and v4-mapped v6 all deny, loudly, naming the blocked address and the config
+knob. Redirects stopped being followed: the client is built with
+`redirect(Policy::none)` and a 3xx hands the `Location` back to the model
+("fetch that URL directly") after pre-guarding it, so a bad redirect is
+named as such — and every hop re-guards by construction.
+
+Two deliberate divergences from ZCode (it hard-blocks private hosts and
+forces HTTPS): private hosts are a knob (`[web] private_hosts`, default
+denied) because coding agents legitimately poke dev servers, and no forced
+HTTPS upgrade — the exfil control is the approval gate; the destination
+guard is for SSRF, and conflating them buys nothing. Known limit,
+documented: check-then-connect is TOCTOU across a DNS rebind; the redirect
+re-check narrows it, full IP pinning is a follow-up if it ever matters.
+`web_search` needs no change (fixed DDG host) but shares the module.
+
+### 2. Lossless output budgets (`tools/mod.rs` + bash / bash_output / web_fetch)
+
+`truncate_middle` threw the middle away — but the recovery tool already
+existed: `read_file` with offset/limit. Those three tools now call
+`budget_output`, which behaves as before under the cap and, over it, spills
+the full text (2 MB hard cap) to `<data_dir>/artifacts/<session>/<label>-<id>.txt`
+and returns head+tail plus a pointer line the model can `read_file`. Spill
+is best-effort (the sandbox law): a failed write falls back to plain
+truncation, never failing the tool. `read_file` itself is excluded — the
+file *is* the artifact. Tool descriptions updated to teach the recovery
+path; the stall message from #3 points at these files too.
+
+### 3. Compaction refill guard (`agent/compact.rs`, `agent/mod.rs`, session event)
+
+Auto-compaction can loop through a pathology silently: context refills
+within a few tool results of a compaction → compact again →
+summarize-the-summary until the session degrades. The agent now counts
+tool-result messages since the last compaction; an auto-compaction that
+triggers again within fewer than 8 counts as a *fast refill*, and two in a
+row set `compaction_stalled`: auto-compaction pauses, and a one-time system
+message names the culprit (the largest single tool result since the last
+compaction — computed *before* the list is replaced, with the tool name
+recovered from its `tool_use_id`) with the recovery moves (grep
+`files`/`count`, offset+limit reads, background + poll). `/compact` is
+always allowed and clears the stall. `Event::Compaction` grew
+serde-defaulted `fast_refill_streak`/`stalled` fields (the v0.14 `Usage`
+pattern), so old sessions replay and resumes restore the stall state.
+
+### 4. Output-pattern hints (`agent/mod.rs` + config)
+
+The injection slot (bg notices, `verify_cmd`, LSP) gained a data-driven
+table: a distinctive substring in any tool result fires its guidance as a
+persisted system message right after the results, throttled to once per 60s
+per pattern. Substring, not regex — regex is already a dependency
+(`repo_map`), but config-supplied regex is a footgun (catastrophic
+backtracking) and the patterns that matter are distinctive enough. Defaults
+ship for the two known bites — GitHub API rate-limit text and
+`command not found` — and `[[output_hint]]` entries in `myharness.toml`
+append to them. ZCode's version is hardcoded; ours is data.
+
+### 5. Skills-list budget (`skills.rs`)
+
+`render_list` was unbounded in chars (a 30-count cap alone). It now carries
+a 4k-char body budget with a degradation ladder: full name+description
+(per-description display cap 120 chars + ellipsis) while they fit →
+name-only lines → `+N more (the skill tool can load them by name)` footer.
+Workspace-over-user collisions keep their slot (override happens in place),
+so the winner stays visible.
+
+### Verification (offline, mock provider — 16 new unit + 2 new integration tests)
+
+Guard: parse/classification/deny-reason unit tests plus async tests on
+IP-literal URLs and `localhost` (no real DNS or egress in CI). Spill:
+tmp-dir round trip, the 2 MB cap, and the write-failure fallback branch.
+Refill: replay of old-format compaction events (serde defaults), replay of
+stall state, and an integration test driving the streak → stall →
+model-guidance → manual-clear lifecycle through `compact_now`. Hints:
+config parse, fire-once-then-throttle, and an integration test proving the
+hint message follows the matching result and persists to the session log.
+Skills: the full degradation ladder. The pre-existing `web_fetch` plan-mode
+test became *more* deterministic in the bargain: its localhost URL is now
+guard-denied before any network instead of relying on connection-refused.
+
+## v0.16 — the harness-RE round: custom TUI + steering
+
+Eight harnesses were reverse-engineered as design references (Codex,
+OpenCode, pi, Claude Code binary, Cline, Aider, Gemini CLI, Goose — clones
+in `harness-re/`, ranked ideas in `harness-re/IDEAS.md`; ideas only, every
+line reimplemented). Two things shipped from it: a custom full-screen TUI
+and the interaction model it demanded.
+
+### The TUI (`myharness tui`, src/tui/)
+
+Design stance: **one column, quiet chrome** — the transcript is the
+product. ratatui 0.30 + crossterm 0.29 (the versions Codex's TUI runs on),
+alternate screen, bracketed paste, panic hook that always restores the
+terminal. The plain REPL stays the default: it is the pipe/CI-safe surface
+(DESIGN #12 holds; the TUI is the frontend that decision predicted).
+
+Architecture (Codex's actor shape): a **worker task owns the Agent** and
+runs turns to completion; the **frontend loop owns the terminal**, merging
+five streams — crossterm input, typed `UiEvent`s, permission requests,
+completion signals, a 120 ms tick. `Ui` grew a third sink (`Ui::events`)
+that emits typed events alongside stdout and serve's JSON-RPC lines (those
+two stay byte-identical); `ToolStart` now carries the tool's input JSON so
+the TUI can render diffs, and `TurnEnd` carries a context estimate for the
+status bar. Permission prompts route through an oneshot channel
+(`set_approval_tx`) so the TUI's modal answers without touching stdin —
+the REPL path is unchanged.
+
+Layout: transcript (follow-tail scroll, PgUp/PgDn to look back, ctrl+g to
+re-follow, "N lines above" indicator), status bar (model, mode, turn,
+`ctx N%` — yellow at 75%, red at 90% — spinner, queued-steering count),
+growing input box (border yellow while busy, pi's ambient-state trick),
+contextual key bar. Rendering is ASCII-first with color as a secondary
+channel, dropped entirely under NO_COLOR. Tool calls render one line each
+with pending/ok/err/**denied** states — denied (permission/hook stops) is
+visually distinct from failed (opencode's lesson); edit_file/write_file
+render a capped +/- diff preview before the result lands; compaction is a
+centered rule; thinking streams dim then collapses to one line with
+duration. The editor is ours (`tui/input.rs`): grapheme-simplified char
+buffer, cursor ops, Ctrl+W/U word/line deletes, persistent history with
+draft restore, multi-line via Alt+Enter, history only while single-line.
+
+### Steering (pi's two-tier queue — the best idea found in any of them)
+
+`Enter` while a turn runs no longer queues in the frontend: the message
+goes to the agent's steering channel and is **injected after the current
+tool batch** (`(user, while you were working) …`, persisted like any
+message) so the model course-corrects mid-turn; if the turn already
+finished, the same queue **revives it** (follow-up tier) instead of
+stranding the input. ESC/Ctrl+C interrupt; idle Ctrl+C is double-press-
+confirm quit. All slash commands work unchanged (`handle_slash` is shared
+with the REPL — the TUI is just another frontend over one engine).
+
+### Scope calls
+
+Deliberately not in v1: native-scrollback inline rendering (Codex forks
+ratatui's Terminal for it — the documented v2 path, reference in
+`harness-re/harnesses/codex/codex-rs/tui/src/custom_terminal.rs`), command
+palette, vim mode, mouse. Also resumed sessions start with an empty TUI
+transcript (replay history is in the session file; re-rendering it is a
+v0.17 candidate).
+
+### Verification
+
+74 unit + 42 integration, zero network: input-editor behavior (cursor
+math, word/line deletes, history + draft restore, wrap + cursor
+positioning), event application (delta batching, thinking collapse,
+denied-vs-failed, compaction rule, context percent), a full-frame
+TestBackend render (layout doesn't panic; markers present), wrap edge
+cases, and an end-to-end steering test through the real agent on the mock
+provider. Clippy clean; release build green.
+
+## v0.17 — the implement-everything round
+
+v0.16 mined eight harnesses; this round implements the entire actionable
+backlog from `harness-re/IDEAS.md` (with the honest exceptions listed at
+the end). Thirteen harness features and four TUI features, each from a
+named source, each reimplemented from scratch.
+
+### Harness features
+
+| Feature (source) | What it is |
+|---|---|
+| Length-truncation guard (pi) | Tool calls carved from a `stop_reason: length` message may carry truncated arguments; they now fail loudly instead of executing — "transport hiccup" can no longer become file damage. |
+| Reflect loop (Aider) | When `verify_cmd` fails after edits and the model tries to stop anyway, it is sent back with the failures (bounded, 3 rounds) before the turn may end. |
+| Turn-context block (Goose MOIM) | One agent-only message per user turn once context passes ~32k tokens: time, cwd, turn budget (`n/max`), and context headroom from ~40% — the model learns how long its leash is. |
+| Compaction spill pre-pass (Gemini) | Before summarizing, tool results over 24k chars spill to artifacts and become pointers (persisted as a `Spill` event, replayed identically). This is the *real* fix for the refill pathology v0.15 only detected: the giant result stops being re-carried. |
+| Stale-context guard (Cline) | read_file fingerprints (mtime_ms, len); edit_file/write_file refuse when the file changed on disk since — the IDE-clobber failure mode. Fingerprints persist (`FileStats` event); writes refresh them. |
+| Plan-mode command guard (Cline) | Plan mode now runs provably read-only bash: quote-aware splitting, redirection/substitution/heredoc deny, an allowlist of read-only programs (not a blacklist — unknown interpreters deny), per-program subcommand checks (`git status/diff/log...`, list-style `git branch/tag`, `gh pr list/view`, bare GET `gh api /path`). Deny rules still win. |
+| Doom-loop gate (opencode) | The same call failing 3x in a row (including bash's in-band `Exit code: N` failures) is refused on the 4th identical attempt with a diagnose-first message. |
+| `session_recall` tool (Goose) | Substring search across every past session transcript — "how did we fix this last month" becomes one call. |
+| `monitor` tool (Claude Code) | Run a command every N seconds until its output matches (or is non-empty), as a background task — CI watches, log-tail-for-error, port-open waits; rides the existing bash_output/notice machinery. |
+| JIT instructions (Gemini) | When a file tool touches a path, any not-yet-seen `AGENTS.md` in its ancestors (within the workspace) is injected (capped 2/batch, persisted) — monorepo per-package instructions arrive exactly when relevant. |
+| Repo-map fit math (Aider) | Files read this session rank as if referenced 50x; important project files (Cargo.toml, Makefile, README...) pin at the top of the map. |
+| Head+tail bg buffer (Codex) | Background output keeps first 20k + rolling last 180k with an omission marker instead of a prefix-only cap — long builds keep their opening lines *and* their latest output. |
+| Turn diffstat (Codex) | At turn end the journal renders `path +12 -8` per file (exact LCS up to 800 lines, net-line approximation beyond) — operator-facing "what this turn changed". |
+
+### TUI features
+
+Rotating status verbs while working; **ctrl+r** reverse history search
+(filter, select, loads into the editor); **ctrl+p** command palette over
+every addressable `/name` (slash commands, skills, command files —
+delivered by the worker via a `Commands` event); and two-stage
+"always allow" (press `a`, see the exact pattern that would be remembered,
+confirm). Input history persists to `history.txt` like the REPL.
+
+### Deliberately not built (and why)
+
+- **Native-scrollback inline rendering** (Codex forks ratatui's Terminal):
+  the v2 TUI path, reference file named in v0.16; a fork of the terminal
+  crate is its own project.
+- **Session-tree JSONL** (pi `id`/`parentId` branching): a format migration
+  that would rewrite every session consumer; queued behind fork UX.
+- **SQLite session index** (Codex/Goose): our listing scans are fast at
+  current session counts; revisit when `sessions` gets slow.
+- **Auto-permission classifier** (Claude Code "auto" mode): model calls in
+  the permission path need their own eval story first.
+- **JS REPL/code-act tool** (Claude Code/OpenCode): a JS runtime in the
+  sandbox model is a security project, not a feature.
+- Already ours by construction: **mid-turn compaction** (pi) — our loop has
+  always compacted between tool batches — and pi's "steering during
+  compaction" works because the drain happens per-batch.
+
+### Verification
+
+78 unit + 50 integration tests, zero network: the plan-guard table (safe
+and sneaky forms), diffstat math, and per-feature end-to-end tests —
+length-dropped calls never execute, the doom gate refuses the fourth
+identical bash failure, MOIM appears past the floor, JIT instructions
+arrive on subdir touch, stale edits refuse after external change,
+session_recall finds planted transcripts, compaction spills (pointer +
+artifact + replay event), and the reflect loop pushes the model back after
+a failing verify_cmd. Clippy clean; release build green.
+
+## v0.18 — zero-mem (the user's own paper port, ported again)
+
+[zero-mem-pi](https://github.com/woolcoxm/zero-mem-pi) — this project's
+author's own extension for the pi agent, a reimplementation of
+*Zero-Mem: Zero-Token Memory Operations for LLM Agents*
+(arXiv:2607.29377) — ported to Rust as `src/zero_mem.rs`. The defining
+property survives the port: **memory operations never call the LLM.**
+Capture is passive (each turn's prompt + final answer become trace units);
+retrieval is deterministic math injected at turn start as a message.
+
+The pipeline is faithful to the pi implementation's final form: BM25
+lexical view (k1=1.5, b=0.75) + entity-context graph scored by
+Personalized PageRank (γ=0.6, idf-weighted adjacency, dangling mass kept,
+ubiquitous entities >10% skipped); query-conditioned routing (temporal
+cues → lexical-primary, subject anchors → graph-primary, ρ=0.6 to the
+primary); per-view min-max normalization including Eq 12's degenerate
+max==min⇒1 rule; fusion scaled once by pool confidence (weak pools inject
+nothing — "no memory beats confusing memory"); evidence closure at 0.35
+discount (sub-min candidates can seed it); top-3 sanitized 120-char
+snippets under a not-authoritative header.
+
+Every hard-won live-bug lesson from the pi DESIGN.md carried over:
+- **Identity is a derived sticky slot, not a ranking** (four consecutive
+  pi live bugs): user/agent names derived from naming statements with a
+  proper-noun gate, a poison filter for default model names (glm/pi/gpt/
+  claude...), newest-naming-wins; injected on each session's first turn
+  and identity-class queries, outside the retrieval gauntlet entirely.
+- **Current-session units are excluded from retrieval** (they ARE the
+  window), and active-context fingerprints prevent re-injecting what is
+  already visible.
+- **Atomic persistence** (temp+rename; a failed load refuses to write)
+  and **cross-process merge** (mtime check, units merged by id — two
+  myharness processes share one store).
+- **Snippet sanitization** (fences/headings/bullets stripped — stored
+  text is untrusted prompt-injection surface).
+- **Retention bounds** (max_units/max_age_days) that can never evict the
+  identity slot.
+
+Deliberately lexical: no embedding model ships in the binary (the pi
+evals themselves showed BM25 competitive with small dense encoders on
+real data; a dense view is the upgrade path). No HNSW (retention bounds
+brute-force cost). No cross-project federation yet.
+
+Config: `[zero_mem]` (enabled default on, top_k, max_units, max_age_days,
+rho, min_score, snippet_chars). Store per project at
+`<data_dir>/zero-mem/<project-slug>.json`. `/memory` (status), `/memory
+search <q>`, `/memory clear`.
+
+Verification: 13 unit tests (entity extraction is code-aware; BM25 ranks
+the right unit; weak pools inject nothing; current-session exclusion;
+active-context dedupe; temporal routing; closure rescues adjacent
+evidence through shared entities; identity derivation with poison filter
+and newest-wins; snippet sanitization; store round-trip + retention;
+fingerprint normalization; near-duplicate dedupe) plus an end-to-end
+integration test: session A states a fact, session B in the same project
+receives it as an injected memory before its first reply.

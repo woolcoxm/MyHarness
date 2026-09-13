@@ -3,7 +3,7 @@
 //! harness), timeouts with process-tree kills, head+tail truncation, and
 //! optional background execution polled via the `bash_output` tool.
 
-use super::{schema_obj, truncate_middle, Tool, ToolCtx, ToolOutput};
+use super::{budget_output, schema_obj, truncate_middle, Tool, ToolCtx, ToolOutput};
 use crate::agent::state::BgTask;
 use crate::config::Shell;
 use async_trait::async_trait;
@@ -116,7 +116,7 @@ impl Tool for BashTool {
     }
 
     fn description(&self) -> &'static str {
-        "Executes a command in the session shell (git-bash on Windows when available, else PowerShell). The working directory persists between calls (cd sticks). stdout/stderr are captured and truncated head+tail if huge; the exit code is always reported. timeout_ms defaults to 120000 (max 600000). Set run_in_background=true for long builds/tests: the command starts immediately, you get a task id, and you keep working — poll it later with bash_output. Long-running or user-interrupted foreground commands are killed (process tree)."
+        "Executes a command in the session shell (git-bash on Windows when available, else PowerShell). The working directory persists between calls (cd sticks; the result ends with `(cwd: …)` when a cd changed it). stdout/stderr are captured; huge output is head+tail truncated with the full text saved to a file you can read_file (with offset/limit) for the middle. The exit code is always reported. timeout_ms defaults to 120000 (max 600000). Set run_in_background=true for long builds/tests: the command starts immediately, you get a task id, and you keep working — poll it later with bash_output. Long-running or user-interrupted foreground commands are killed (process tree)."
     }
 
     fn schema(&self) -> Value {
@@ -351,9 +351,15 @@ fn report_foreground(
     ctx: &mut ToolCtx<'_>,
 ) -> ToolOutput {
     let (stdout, marker_path) = extract_marker(stdout_raw);
+    let mut cwd_note: Option<String> = None;
     if let Some(p) = marker_path {
         let pb = std::path::PathBuf::from(&p);
         if pb.is_dir() {
+            // cwd moves in-band (the system prompt stays byte-stable for the
+            // prompt cache), so tell the model when a cd actually took.
+            if !same_dir(&pb, &ctx.cwd) {
+                cwd_note = Some(pb.display().to_string());
+            }
             ctx.effects.new_cwd = Some(pb);
         }
     }
@@ -367,29 +373,87 @@ fn report_foreground(
         report = format!("Exit code: {exit}\n(no output)");
     }
     report.push_str(&format!("\n\n[ran in {:.1}s]", started.elapsed().as_secs_f32()));
-    ToolOutput::ok(truncate_middle(&report, MAX_OUTPUT, 20_000, 8_000))
+    if let Some(cwd) = cwd_note {
+        report.push_str(&format!("\n(cwd: {cwd})"));
+    }
+    ToolOutput::ok(budget_output(ctx, "bash", &report, MAX_OUTPUT, 20_000, 8_000))
+}
+
+/// Best-effort directory equality: canonicalized when both sides resolve,
+/// else case-insensitive slash-normalized display strings (Windows).
+fn same_dir(a: &std::path::Path, b: &std::path::Path) -> bool {
+    match (a.canonicalize(), b.canonicalize()) {
+        (Ok(ca), Ok(cb)) => ca == cb,
+        _ => {
+            let norm = |p: &std::path::Path| p.display().to_string().replace('\\', "/").to_ascii_lowercase();
+            norm(a) == norm(b)
+        }
+    }
 }
 
 /// Append everything readable from `s` into the shared output buffer,
-/// capped at MAX_BG_OUTPUT chars.
+/// capped at MAX_BG_OUTPUT chars — symmetric head+tail (Codex's
+/// head_tail_buffer): the first HEAD_KEEP and a rolling tail, with an
+/// omission marker, so long-running tasks keep both their opening lines
+/// and their latest output.
 async fn drain_into<R: tokio::io::AsyncRead + Unpin>(mut s: R, out: Arc<Mutex<String>>) {
     use tokio::io::AsyncReadExt;
+    const HEAD_KEEP: usize = 20_000;
     let mut buf = vec![0u8; 8192];
+    let mut head = String::new();
+    let mut tail = std::collections::VecDeque::new();
+    let mut tail_len = 0usize;
+    let mut total = 0usize;
+    let mut omitted = false;
     loop {
         match s.read(&mut buf).await {
             Ok(0) | Err(_) => break,
             Ok(n) => {
                 let chunk = String::from_utf8_lossy(&buf[..n]).to_string();
-                let mut guard = out.lock().unwrap();
-                if guard.len() < MAX_BG_OUTPUT {
-                    guard.push_str(&chunk);
-                    if guard.len() > MAX_BG_OUTPUT {
-                        guard.truncate(MAX_BG_OUTPUT);
-                        guard.push_str("\n... [output capped] ...");
+                total += chunk.chars().count();
+                if head.chars().count() < HEAD_KEEP {
+                    let room = HEAD_KEEP - head.chars().count();
+                    let mut it = chunk.chars();
+                    for c in it.by_ref().take(room) {
+                        head.push(c);
+                    }
+                    let rest: String = it.collect();
+                    if !rest.is_empty() {
+                        tail_len += rest.chars().count();
+                        tail.push_back(rest);
+                    }
+                } else {
+                    tail_len += chunk.chars().count();
+                    tail.push_back(chunk);
+                }
+                // Trim the tail from the front to the rolling budget.
+                while tail_len > MAX_BG_OUTPUT.saturating_sub(HEAD_KEEP) {
+                    if let Some(front) = tail.pop_front() {
+                        tail_len -= front.chars().count();
+                        omitted = true;
+                    } else {
+                        break;
                     }
                 }
             }
         }
+    }
+    let mut guard = out.lock().unwrap();
+    if omitted {
+        guard.push_str(&head);
+        guard.push_str("\n... [middle output omitted] ...\n");
+        guard.push_str(&tail.into_iter().collect::<String>());
+        let tail_budget = MAX_BG_OUTPUT - HEAD_KEEP;
+        guard.push_str(&format!(
+            "\n... [total output {total} chars, kept first {HEAD_KEEP} + last {tail_budget}] ..."
+        ));
+    } else {
+        guard.push_str(&head);
+        guard.push_str(&tail.into_iter().collect::<String>());
+    }
+    if guard.chars().count() > MAX_BG_OUTPUT {
+        let keep: String = guard.chars().take(MAX_BG_OUTPUT).collect();
+        *guard = keep;
     }
 }
 
@@ -444,8 +508,13 @@ fn spawn_background(mut spawned: Spawned, command: String) -> BgTask {
 }
 
 /// Run the opt-in verification command after edits and format a compact
-/// report for the model. Synchronous by design; bounded by the bash timeout.
-pub(crate) async fn run_verify(cfg: &crate::config::Config, cwd: &std::path::Path, cmd: &str) -> String {
+/// report for the model. Synchronous by design; bounded by the bash
+/// timeout. Returns (report, exit_ok) — the bool drives the reflect loop.
+pub(crate) async fn run_verify(
+    cfg: &crate::config::Config,
+    cwd: &std::path::Path,
+    cmd: &str,
+) -> (String, bool) {
     let shell = cfg.resolve_shell();
     let mut command = build_command(&shell, cmd, cwd, cfg.sandbox);
     let timeout = Duration::from_millis(cfg.bash_timeout_ms.min(180_000));
@@ -455,23 +524,37 @@ pub(crate) async fn run_verify(cfg: &crate::config::Config, cwd: &std::path::Pat
         Ok(child) => match tokio::time::timeout(timeout, child.wait_with_output()).await {
             Ok(res) => match res {
                 Ok(o) => o,
-                Err(e) => return format!("failed to run verify command: {e}"),
+                Err(e) => return (format!("failed to run verify command: {e}"), false),
             },
             Err(_) => {
-                return format!("verify command timed out after {:.0}s and was killed", timeout.as_secs_f32());
+                return (
+                    format!("verify command timed out after {:.0}s and was killed", timeout.as_secs_f32()),
+                    false,
+                );
             }
         },
-        Err(e) => return format!("failed to start verify command: {e}"),
+        Err(e) => return (format!("failed to start verify command: {e}"), false),
     };
     let exit = output.status.code().unwrap_or(-1);
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
+    // Clean runs get one line — the empty header scaffold is pure token noise
+    // on the (common) green path.
+    if exit == 0 && stdout.trim().is_empty() && stderr.trim().is_empty() {
+        return (
+            format!("Exit code: 0 (in {:.1}s) — no output (clean)", started.elapsed().as_secs_f32()),
+            true,
+        );
+    }
     let trunc = |s: &str, max: usize| truncate_middle(s.trim(), max, max * 2 / 3, max / 3);
-    format!(
-        "Exit code: {exit} (in {:.1}s)\n--- stdout ---\n{}\n--- stderr ---\n{}",
-        started.elapsed().as_secs_f32(),
-        trunc(&stdout, 3_000),
-        trunc(&stderr, 2_000)
+    (
+        format!(
+            "Exit code: {exit} (in {:.1}s)\n--- stdout ---\n{}\n--- stderr ---\n{}",
+            started.elapsed().as_secs_f32(),
+            trunc(&stdout, 3_000),
+            trunc(&stderr, 2_000)
+        ),
+        exit == 0,
     )
 }
 
