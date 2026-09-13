@@ -116,6 +116,8 @@ pub struct AgentState {
     pub bg_noticed: std::collections::HashSet<u32>,
     /// Use the FULL system prompt (richer guidance) instead of LEAN.
     pub verbose_prompt: bool,
+    /// Tools the user disabled via /tools — excluded from API requests.
+    pub disabled_tools: std::collections::HashSet<String>,
 }
 
 const MAX_PROJECT_CONTEXT: usize = 8_000;
@@ -242,6 +244,7 @@ impl AgentState {
             commands,
             bg_noticed: std::collections::HashSet::new(),
             verbose_prompt: false,
+            disabled_tools: std::collections::HashSet::new(),
         }
     }
 

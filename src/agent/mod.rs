@@ -220,11 +220,17 @@ impl Agent {
 
     fn build_request(&self) -> LlmRequest {
         let system = system_prompt::build_system(&self.state, self.is_subagent);
+        let tools: Vec<_> = self
+            .registry
+            .schemas()
+            .into_iter()
+            .filter(|t| !self.state.disabled_tools.contains(&t.name))
+            .collect();
         LlmRequest {
             model: self.model.clone(),
             system,
             messages: self.state.messages.clone(),
-            tools: self.registry.schemas(),
+            tools,
             max_tokens: self.cfg.max_tokens,
             temperature: self.cfg.temperature,
         }

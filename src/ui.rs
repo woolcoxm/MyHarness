@@ -495,6 +495,62 @@ pub async fn handle_slash(agent: &mut Agent, cmd: &str) -> SlashResult {
                 }
             }
         }
+        "tools" => {
+            let all_tools = agent.registry.names();
+            let rest = cmd.strip_prefix(name).unwrap_or("").trim();
+            let parts: Vec<&str> = rest.split_whitespace().collect();
+            match parts.first().copied().unwrap_or("") {
+                "toggle" | "on" | "off" => {
+                    let action = parts[0];
+                    let mut changed = Vec::new();
+                    for tool_name in &parts[1..] {
+                        let exists = all_tools.contains(tool_name);
+                        if !exists {
+                            agent.ui.warn(&format!("unknown tool '{tool_name}'"));
+                            continue;
+                        }
+                        match action {
+                            "on" => { agent.state.disabled_tools.remove(*tool_name); changed.push(format!("[x] {tool_name}")); }
+                            "off" => { agent.state.disabled_tools.insert(tool_name.to_string()); changed.push(format!("[ ] {tool_name}")); }
+                            _ => {
+                                // toggle
+                                if agent.state.disabled_tools.contains(*tool_name) {
+                                    agent.state.disabled_tools.remove(*tool_name);
+                                    changed.push(format!("[x] {tool_name}"));
+                                } else {
+                                    agent.state.disabled_tools.insert(tool_name.to_string());
+                                    changed.push(format!("[ ] {tool_name}"));
+                                }
+                            }
+                        }
+                    }
+                    if !changed.is_empty() {
+                        agent.ui.info(&format!("{} tool(s) updated:
+{}", changed.len(), changed.join("
+")));
+                    }
+                }
+                "reset" => {
+                    agent.state.disabled_tools.clear();
+                    agent.ui.info("all tools re-enabled");
+                }
+                _ => {
+                    // List all tools with checkbox markers
+                    let mut lines = vec!["Tools (toggle with /tools toggle <name>):".to_string(), String::new()];
+                    for tool in &all_tools {
+                        let mark = if agent.state.disabled_tools.contains(*tool) { "[ ]" } else { "[x]" };
+                        lines.push(format!("  {mark} {tool}"));
+                    }
+                    let disabled = agent.state.disabled_tools.len();
+                    if disabled > 0 {
+                        lines.push(String::new());
+                        lines.push(format!("{disabled} tool(s) disabled — saving ~{disabled} × 400 tok/request"));
+                    }
+                    agent.ui.out(&lines.join("
+"));
+                }
+            }
+        }
         "login" => {
             agent.ui.info("Setting up myharness credentials...");
             agent.ui.info("");
