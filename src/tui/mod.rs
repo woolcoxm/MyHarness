@@ -367,6 +367,22 @@ pub async fn run(mut agent: Agent) -> Result<()> {
     crossterm::execute!(stdout, EnterAlternateScreen, EnableBracketedPaste)?;
     let default_panic = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
+        // Write crash log BEFORE restoring terminal
+        let crash_log = std::env::var("HOME")
+            .or_else(|_| std::env::var("USERPROFILE"))
+            .map(|h| format!("{h}/.myharness/crash.log"))
+            .unwrap_or_else(|_| "crash.log".to_string());
+        let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
+        let msg = format!(
+            "
+=== CRASH {} ===
+{}
+=== END ===
+",
+            timestamp,
+            info
+        );
+        let _ = std::fs::write(&crash_log, &msg);
         let _ = restore_terminal();
         default_panic(info);
     }));
