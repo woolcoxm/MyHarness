@@ -12,7 +12,7 @@
 use std::net::{IpAddr, ToSocketAddrs};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Dest {
+pub struct Dest {
     pub scheme: String,
     pub host: String,
     pub port: u16,
@@ -127,7 +127,7 @@ pub(crate) fn deny_reason(host: &str, ips: &[IpAddr]) -> Option<String> {
 
 /// Guard one URL. Literal-IP hosts are checked DNS-free; hostnames resolve
 /// (off the async runtime) and every address must be public.
-pub(crate) async fn guard(raw: &str, allow_private: bool) -> Result<Dest, String> {
+pub async fn guard(raw: &str, allow_private: bool) -> Result<Dest, String> {
     let dest = parse_dest(raw)?;
     if allow_private {
         return Ok(dest);
