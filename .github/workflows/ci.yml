@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Tests (offline, mock provider)
+        run: cargo test --all-targets
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+      - name: Release build
+        run: cargo build --release --bins --examples
+      - name: Offline smoke test
+        shell: bash
+        env:
+          MYHARNESS_MOCK_FILE: examples/smoke-script.json
+          MYHARNESS_DATA_DIR: ${{ runner.temp }}/mh_smoke
+        run: |
+          mkdir -p "$MYHARNESS_DATA_DIR"
+          cd "$MYHARNESS_DATA_DIR"
+          cargo metadata --format-version 1 --manifest-path "$GITHUB_WORKSPACE/Cargo.toml" >/dev/null 2>&1 || true
+          BIN="$GITHUB_WORKSPACE/target/release/myharness"
+          [ -f "$BIN.exe" ] && BIN="$BIN.exe"
+          "$BIN" -p "ci smoke" --provider mock | tee out.txt
+          grep -q "SMOKE_OK" out.txt

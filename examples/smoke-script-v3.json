@@ -1,0 +1,11 @@
+[
+  {
+    "text": "I will edit a file; the harness will run the project's verify command automatically afterwards.",
+    "tool_calls": [
+      { "name": "write_file", "input": { "path": "verified.txt", "content": "v0.3\n" } }
+    ]
+  },
+  {
+    "text": "SMOKE_V3_OK: file written and auto-verification result received."
+  }
+]

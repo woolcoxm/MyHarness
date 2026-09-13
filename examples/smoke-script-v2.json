@@ -1,0 +1,25 @@
+[
+  {
+    "text": "I will fan out three reads in parallel, then run a build in the background.",
+    "tool_calls": [
+      { "name": "read_file", "input": { "path": "a.txt" } },
+      { "name": "read_file", "input": { "path": "b.txt" } },
+      { "name": "grep", "input": { "pattern": "needle" } }
+    ]
+  },
+  {
+    "text": "Reads done. Starting the long build in the background and continuing.",
+    "tool_calls": [
+      { "name": "bash", "input": { "command": "echo bg_output_marker", "run_in_background": true } }
+    ]
+  },
+  {
+    "text": "Polling the background build.",
+    "tool_calls": [
+      { "name": "bash_output", "input": { "id": 1 } }
+    ]
+  },
+  {
+    "text": "SMOKE_V2_OK: parallel reads executed, background task ran and was polled."
+  }
+]

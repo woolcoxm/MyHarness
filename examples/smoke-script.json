@@ -1,0 +1,37 @@
+[
+  {
+    "text": "Starting the job: I will track it, write a notes file, then verify it with search.",
+    "tool_calls": [
+      {
+        "name": "todo_write",
+        "input": {
+          "todos": [
+            { "content": "write notes.md", "status": "in_progress", "priority": "high" },
+            { "content": "verify with grep", "status": "pending" }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "text": "Writing the notes file now.",
+    "tool_calls": [
+      {
+        "name": "write_file",
+        "input": {
+          "path": "notes.md",
+          "content": "# Notes\n\nsmoke test was here\nline two\n"
+        }
+      }
+    ]
+  },
+  {
+    "text": "Verifying the file with a content search.",
+    "tool_calls": [
+      { "name": "grep", "input": { "pattern": "smoke", "glob": "*.md" } }
+    ]
+  },
+  {
+    "text": "SMOKE_OK: notes.md created and its contents verified with grep."
+  }
+]

@@ -1,0 +1,11 @@
+[
+  {
+    "text": "I will call the MCP echo tool now.",
+    "tool_calls": [
+      { "name": "mcp__mock__echo", "input": { "text": "live mcp check" } }
+    ]
+  },
+  {
+    "text": "SMOKE_V4_OK: MCP round trip complete."
+  }
+]
