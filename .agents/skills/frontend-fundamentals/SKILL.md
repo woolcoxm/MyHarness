@@ -74,8 +74,7 @@ keys, and states wired by hand.
 ```html
 <!-- Bad: not focusable, no role, no keys -->
 <div onclick="save()">Save</div>
-<!-- Good -->
-<button type="button" onclick="save()">Save</button>
+<button type="button" onclick="save()">Save</button> <!-- Good -->
 ```
 
 Prefer labelling by visible content: `aria-labelledby` first, then
@@ -111,9 +110,7 @@ keystroke. Tie each error to its input and say exactly what to fix.
     <input id="email" name="email" type="email"
            autocomplete="email" inputmode="email"
            aria-describedby="email-error" required>
-    <span id="email-error" role="alert" hidden>
-      Enter an address like name@example.com.
-    </span>
+    <span id="email-error" role="alert" hidden>Enter a valid address.</span>
   </p>
   <button type="submit">Create account</button>
 </form>

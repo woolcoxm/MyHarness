@@ -20,8 +20,8 @@ if ("email" in contact) contact.email;        // key presence
 if (err instanceof HttpError) err.status;     // prototype
 ```
 
-Discriminated unions are the workhorse: a literal `kind`/`status` field
-lets `switch` narrow each branch at zero runtime cost.
+Discriminated unions are the workhorse: a literal `kind` field lets
+`switch` narrow each branch at zero runtime cost.
 
 ```ts
 type Shape =
@@ -32,10 +32,7 @@ function area(s: Shape): number {
   switch (s.kind) {
     case "circle": return Math.PI * s.r ** 2;
     case "rect":   return s.w * s.h;
-    default: {
-      const exhaustive: never = s; // compile error if a shape is added
-      return exhaustive;
-    }
+    default: { const bad: never = s; return bad; } // exhaustiveness
   }
 }
 ```
@@ -68,8 +65,7 @@ interface Store<T = unknown> { value: T }            // default param
   structurally compatible inputs.
 - Use `infer` inside conditional types to pull types apart instead of
   hand-maintaining parallel hierarchies.
-- Use `NoInfer<T>` when a parameter must be pinned by another argument
-  rather than inferred from itself.
+- Use `NoInfer<T>` to pin a parameter to another argument's type.
 
 ## Utility Types
 
@@ -95,7 +91,6 @@ type Nullable<T> = { [K in keyof T]: T[K] | null };
 type Getters<T> = {
   [K in keyof T as `get${Capitalize<K & string>}`]: () => T[K] // remap
 };
-// { getName: () => string; getAge: () => number } from { name, age }
 ```
 
 `keyof T` yields the key union; `T[K]` is indexed access. Remap with
@@ -110,8 +105,8 @@ type Event = `${Domain}${"Created" | "Updated" | "Deleted"}`;
 function on<E extends Event>(event: E, handler: (e: E) => void) {}
 ```
 
-Derive unions mechanically (event names, route params, prefixed config
-keys) instead of maintaining parallel literals by hand.
+Derive unions mechanically (event names, route params, config keys)
+instead of maintaining parallel literals by hand.
 
 ## tsconfig Strict Mode
 
@@ -129,7 +124,7 @@ Enable `strict: true`; every flag it turns on catches a real bug class.
 
 Also enable `noUncheckedIndexedAccess` (so `arr[i]` is `T | undefined`)
 on codebases that parse external input. Never disable strict flags
-file-by-file to unblock a fix: the flag failure is the finding.
+file-by-file: the flag failure is the finding.
 
 ## Declaration Files
 
@@ -142,7 +137,6 @@ declare global {
   interface Window { analytics?: { track(name: string): void } }
 }
 export {}; // keeps the file a module
-
 // module augmentation — extend a library's types, don't fork them
 declare module "express-serve-static-core" {
   interface Request { user?: SessionUser }
@@ -168,14 +162,9 @@ type Result<T, E> =
   | { ok: true; value: T }
   | { ok: false; error: E };
 
-function render<T>(state: Request<T>): string {
-  switch (state.status) {
-    case "idle":    return "";
-    case "loading": return "Loading...";
-    case "success": return String(state.data);
-    case "error":   return state.error.message;
-  }
-}
+// Each switch/if branch carries only the fields that state owns:
+// loading has no data, error has no data, success has no error.
+// Impossible states do not compile.
 ```
 
 ## any vs unknown vs never
@@ -203,13 +192,13 @@ a value; the latter asserts wishes about it.
 - Method syntax is bivariant; arrow-property syntax is checked strictly
   under `strictFunctionTypes`. Prefer `onChange: (v: string) => void`
   in callback interfaces.
-- Structural typing accepts any object with extra properties: two
-  identical shapes are interchangeable. Add a brand
-  (`__brand: "UserId"`) when identity matters.
-- Enums: prefer literal unions (`"asc" | "desc"`); `const enum`
-  breaks `isolatedModules` setups; for a runtime object use `as const`
-  plus `typeof`.
-- `as` casts silence the compiler without checking: narrow with
-  predicates or validate with a schema (zod) instead.
+- Structural typing accepts extra properties: identical shapes are
+  interchangeable. Add a brand (`__brand: "UserId"`) when identity
+  matters.
+- Enums: prefer literal unions (`"asc" | "desc"`); `const enum` breaks
+  `isolatedModules` setups; for a runtime object use `as const` plus
+  `typeof`.
+- `as` casts silence the compiler without checking: narrow or validate
+  (zod) instead.
 - Inference from `[]` or `{}` yields `never`/empty shapes: annotate the
   declaration, not the push site.

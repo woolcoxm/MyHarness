@@ -5,9 +5,8 @@ description: Load when writing or reviewing JavaScript to apply destructuring, s
 
 # Modern JavaScript
 
-Use these patterns to keep JS terse without becoming clever. Prefer the
-construct that states intent: combinators for concurrency, destructuring
-for shape, custom errors for failure taxonomy.
+Use these patterns to keep JS terse without becoming clever — prefer
+combinators for concurrency, destructuring for shape, custom errors for taxonomy.
 
 ## Destructuring
 
@@ -19,11 +18,9 @@ function draw({ x = 0, y = 0, color = "black" } = {}) {} // named params
 const { profile: { org = "personal" } = {} } = user;     // nested defaults
 ```
 
-- Defaults apply only to `undefined` — `null` passes through. Normalize
-  with `??` first when an API sends `null`.
-- Destructure in function signatures for named, defaultable parameters;
-  keep the `= {}` fallback so callers can omit the object entirely.
-- Return objects, not arrays, so call sites can pick fields by name.
+- Defaults apply only to `undefined` — `null` passes through; use `??`.
+- Destructure in signatures for named, defaultable parameters; keep the
+  `= {}` fallback so callers can omit the object.
 
 ## Spread and Rest
 
@@ -34,20 +31,19 @@ const next = { ...state, items: [...state.items, item] }; // immutable add
 function log(tag, ...args) {}                      // rest: collect args
 ```
 
-- Treat spread as immutable update syntax: copy the parent, replace the
-  changed branch; never mix with deep mutation.
-- Spread is one level deep — nested objects stay shared. Clone
-  explicitly (`structuredClone(obj)`) when independence is required.
+- Treat spread as immutable update syntax: copy the parent, replace
+  the changed branch; never mix with deep mutation.
+- Spread is one level deep — nested objects stay shared; use `structuredClone` for independence.
 
 ## Template Literals
 
 ```js
-const msg = `Hello ${name}, your total is ${(qty * price).toFixed(2)}.`;
+const msg = `Hello ${name}, total ${(qty * price).toFixed(2)}.`;
 const ids = rows.map((r) => `row-${r.id}`).join(", ");
 ```
 
 Use tagged templates when interpolation needs policy (escaping,
-streaming); prefer library tag functions over casual hand-rolled ones.
+streaming); prefer library tag functions over hand-rolled ones.
 
 ## Async Patterns
 
@@ -59,7 +55,7 @@ concurrency tools.
 | `Promise.all` | All fulfill | First rejection | Parallel loads where all must succeed |
 | `Promise.allSettled` | All settle | Never | Independent best-effort work |
 | `Promise.race` | First settles | First rejection | Timeouts, first answer wins |
-| `Promise.any` | First fulfills | All reject (`AggregateError`) | Redundant sources, fastest success |
+| `Promise.any` | First fulfills | All reject (`AggregateError`) | Fastest of redundant sources |
 
 ```js
 // Parallel: independent calls — never await them one by one
@@ -71,31 +67,25 @@ const [user, orders] = await Promise.all([
 // Sequential: only when step N+1 needs step N's result
 const profile = await api.getUser(id);
 const prefs = await api.getPrefs(profile.theme);
-
-// Best-effort fan-out
-const results = await Promise.allSettled(urls.map((u) => fetch(u)));
 ```
 
-Handle errors with `try/catch` around the `await`, or `.catch` on the
-composed promise. Every `await` lives in a function whose rejection is
-handled here or deliberately propagated to a caller that handles it.
+Handle errors with `try/catch` around the `await` or `.catch` on the
+composed promise; every rejection is handled or propagated upward.
 
 ## Modules
 
 ```js
-import { formatMoney } from "./money.js";   // named import
-import Invoice, { calcTax } from "./invoice.js"; // default + named
-export const RATE = 0.08;                   // named export
-const heavy = await import("./chart.js");   // dynamic import:
-heavy.openChart(el);                        // code-split point
+import { formatMoney } from "./money.js";         // named import
+import Invoice, { calcTax } from "./invoice.js";  // default + named
+export const RATE = 0.08;                         // named export
+const heavy = await import("./chart.js");         // dynamic import:
+heavy.openChart(el);                              // code-split point
 ```
 
-- Use named exports as the default style; default exports rename
-  silently at every import site and hurt greppability.
+- Use named exports by default: defaults rename silently at import sites.
 - Dynamic-import user-invisible code (charts, editors, modals) to
   shrink the initial bundle; load on first interaction, not hover.
-- Keep modules side-effect free so bundlers can tree-shake; avoid
-  barrel files that re-export the world.
+- Keep modules side-effect free so bundlers can tree-shake.
 
 ## Iterables and Generators
 
@@ -107,10 +97,9 @@ function* fib() {
 for (const n of fib()) { if (n > 1000) break; console.log(n); }
 ```
 
-- `for...of` works on anything with `Symbol.iterator`: arrays, strings,
-  Maps, Sets, NodeLists. Use it when indexes are not needed.
-- Use generators instead of huge intermediate arrays for pipelines, and
-  `yield*` to delegate to another iterable.
+- `for...of` works on anything with `Symbol.iterator`: arrays, strings, Maps, Sets, NodeLists.
+- Use generators instead of huge intermediate arrays; delegate with
+  `yield*` to another iterable.
 - Generators power `async function*` streams: `for await (const chunk
   of stream)`.
 
@@ -128,16 +117,13 @@ function makeCounter() {
 
 - Use closures for private state instead of underscore conventions.
 - Watch memory: a closure stored globally (listener, cache, interval)
-  pins everything it captured, including detached DOM nodes. Clear the
-  reference when done (`clearInterval`, `removeEventListener`).
-- `let`/`const` are block-scoped; a `var` in a loop shares one binding
-  across iterations, which is why loop callbacks want `let`.
+  pins everything it captured, including detached DOM nodes — clear it.
+- `let`/`const` are block-scoped; `var` loop counters share one binding — loop callbacks want `let`.
 
 ## The Event Loop
 
-JS runs one task at a time. Script, timers, and events queue as
-macrotasks; promise callbacks queue as microtasks, which drain fully
-after each task and before rendering.
+JS runs one task at a time: timers and events as macrotasks, promise
+callbacks as microtasks drained after each task, before rendering.
 
 ```js
 console.log("1: sync");
@@ -147,20 +133,18 @@ console.log("2: sync");
 // Output: 1, 2, 3, 4
 ```
 
-- `setTimeout(fn, 0)` means "next macrotask, after microtasks and often
-  after rendering" — never "immediately".
+- `setTimeout(fn, 0)` runs after microtasks and often rendering — never immediate.
 - Long synchronous work blocks both queues and the render: the page
   freezes. Chunk big loops or move them to a Worker.
-- Infinite microtask chains starve rendering exactly like
-  `while (true)`.
+- Infinite microtask chains starve rendering like `while (true)`.
 
 ## Maps, Sets, WeakMap, WeakSet
 
 | Structure | Reach for it when |
 |-----------|-------------------|
 | `Map` | Non-string keys, frequent add/delete, insertion order, `.size` |
-| `Set` | Unique values, O(1) membership, union/intersection |
-| `WeakMap` | Per-object metadata that should die with its key |
+| `Set` | Unique values, O(1) membership tests, union/intersection |
+| `WeakMap` | Per-object metadata (caches, listeners) that dies with its key |
 | `WeakSet` | Marking objects (visited, subscribed) without blocking GC |
 
 ```js
@@ -171,8 +155,7 @@ function process(node) {
 }
 ```
 
-Prefer `Map` over plain objects as dictionaries: no prototype
-pollution, direct key iteration, no key-coercion surprises.
+Prefer `Map` over plain objects as dictionaries: no prototype pollution or key-coercion surprises.
 
 ## Optional Chaining and Nullish Coalescing
 
@@ -182,9 +165,8 @@ const port = config.port ?? 3000;   // 0 and "" are kept!
 fn?.(arg);                          // call only if fn exists
 ```
 
-Use `??` for defaults, never `||`, whenever `0`, `""`, `false`, or
-`NaN` are legitimate values. Do not chain ten `?.`s as armor — one
-guard plus validation at the boundary reads better and fails louder.
+Use `??`, never `||`, for defaults when `0`, `""`, `false`, or `NaN` are legitimate.
+One guard plus boundary validation beats ten chained `?.`s as armor.
 
 ## Error Handling
 
@@ -192,8 +174,7 @@ guard plus validation at the boundary reads better and fails louder.
 class HttpError extends Error {
   constructor(status, message, options) {
     super(message, options);        // options.cause preserves the chain
-    this.name = "HttpError";
-    this.status = status;
+    this.name = "HttpError"; this.status = status;
   }
 }
 
@@ -205,18 +186,17 @@ try {
 }
 ```
 
-- Subclass `Error` per failure domain and set `name`; catch sites then
+- Subclass `Error` per failure domain and set `name`; catch sites
   branch on type, not message strings.
-- Always forward `cause` when wrapping so logs keep the original stack.
-- Attach structured data to errors instead of parsing their messages.
+- Forward `cause` when wrapping so logs keep the original stack; attach
+  structured data instead of parsing messages.
 
 ## Common Pitfalls
 
-- `await` inside `forEach` does not wait: use `for...of` for
-  sequential, `Promise.all` for parallel.
-- Floating promises reject later as unhandled rejections: await them
-  or attach `.catch`.
+- `await` inside `forEach` does not wait: use `for...of` or `Promise.all`.
+- Floating promises reject later as unhandled rejections: await or
+  `.catch` them.
 - Shallow spread assumed deep: nested objects are still shared.
 - `||` for defaults clobbers `0`/`""`: use `??`.
 - `typeof null === "object"`: check for `null` explicitly.
-- Returning from `catch` or `finally` swallows the in-flight error.
+- Returning from `catch`/`finally` swallows the in-flight error.

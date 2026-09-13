@@ -12,8 +12,8 @@ grid, then JS measurement.
 ## Flexbox Mental Model
 
 Flexbox distributes space along one axis. `flex-direction` sets the main
-axis; the perpendicular axis is the cross axis. `justify-*` always means
-main axis, `align-*` always means cross axis, whatever the direction.
+axis; the perpendicular is the cross axis. `justify-*` always means main
+axis, `align-*` always means cross axis, whatever the direction.
 
 ```css
 .toolbar {
@@ -25,19 +25,17 @@ main axis, `align-*` always means cross axis, whatever the direction.
 }
 ```
 
-- Use `gap` instead of margins between siblings: no first/last-child
-  cleanup needed.
-- Wrapping creates flex lines; only then does `align-content` do
-  anything (it spaces lines; `align-items` spaces items in a line).
-- Write `flex: 1 1 0` (grow, shrink, basis) rather than `flex: 1` when
-  equal-width columns matter: basis `0` splits space equally, basis
-  `auto` sizes from content.
-- `flex-wrap: wrap` plus a `flex-basis` on children is the recipe for
-  tag and chip rows.
+- Use `gap`, not margins, between siblings: no first/last-child cleanup.
+- Wrapping creates flex lines; only then does `align-content` act (it
+  spaces lines, not items within them).
+- Write `flex: 1 1 0` (grow, shrink, basis) rather than `flex: 1` for
+  equal-width columns: basis `0` splits space equally, `auto` sizes
+  from content.
+- `flex-wrap: wrap` plus `flex-basis` on children handles tag/chip rows.
 
 ## CSS Grid
 
-Grid places items in two dimensions at once. Use it when rows and
+Grid places items in two dimensions at once — use it when rows and
 columns must align: page shells, galleries, forms.
 
 ```css
@@ -51,14 +49,11 @@ columns must align: page shells, galleries, forms.
     "side footer";
   min-height: 100vh;
 }
-.header { grid-area: header; }
-.side   { grid-area: side; }
-.main   { grid-area: main; }
-.footer { grid-area: footer; }
+.side { grid-area: side; } /* place children into named areas */
 ```
 
 Always pair flexible columns with `minmax(0, 1fr)`, never bare `1fr`:
-plain `1fr` has an automatic minimum of `auto`, so long unbreakable
+plain `1fr` has an implicit minimum of `auto`, so long unbreakable
 content (URLs, tables) blows out the track.
 
 | Function | Behavior | Use when |
@@ -69,8 +64,8 @@ content (URLs, tables) blows out the track.
 ## Responsive Design
 
 Write mobile-first: base styles target the small screen, then layer
-`min-width` queries for larger viewports. Designing downward from
-desktop produces override wars.
+`min-width` queries upward. Designing down from desktop breeds
+override wars.
 
 ```css
 .card-grid { display: grid; gap: 1rem; grid-template-columns: 1fr; }
@@ -90,8 +85,8 @@ desktop produces override wars.
 }
 ```
 
-Use fluid typography with `clamp()` to remove breakpoints; clamp with a
-rem minimum so user font-size preferences still apply.
+Fluid typography with `clamp()` removes breakpoints; clamp with a rem
+minimum so user font-size preferences still apply.
 
 ```css
 h1 { font-size: clamp(1.75rem, 1rem + 3vw, 3rem); }
@@ -114,11 +109,11 @@ button { color: var(--accent); }
 ```
 
 - Prefer semantic tokens (`--surface`, `--text-muted`) over literal
-  ones (`--blue-500`) so themes stay coherent when the palette changes.
+  ones (`--blue-500`) so themes survive palette changes.
 - Scope component knobs to the component (`.card { --gap: 1rem; }`) so
   consumers can retune it from outside.
-- Custom properties cascade, inherit, and resolve at use sites; they
-  are not Sass variables.
+- Custom properties cascade, inherit, and resolve at use — not Sass
+  variables.
 
 ## Modern Selectors
 
@@ -139,8 +134,8 @@ used to need JS class toggling.
 ## Transitions and Animations
 
 Animate only `transform` and `opacity` for 60fps: the compositor
-handles them without layout or paint. Animating `width`, `height`,
-`top`, or `left` triggers layout every frame.
+handles them without layout or paint. `width`, `height`, `top`, and
+`left` trigger layout every frame.
 
 ```css
 .card { transition: transform 200ms ease, opacity 200ms ease; }
@@ -153,9 +148,8 @@ handles them without layout or paint. Animating `width`, `height`,
 .drawer { animation: slide-in 250ms ease-out; }
 ```
 
-Add `will-change: transform` only to fix a measured jank problem, and
-remove it after: promoted layers cost memory. Always honor motion
-preferences:
+Add `will-change: transform` only to fix measured jank, then remove it:
+promoted layers cost memory. Always honor motion preferences:
 
 ```css
 @media (prefers-reduced-motion: reduce) {
@@ -168,46 +162,35 @@ preferences:
 
 ## Layout Patterns
 
-- Holy grail: the named-area `.page` grid above; its `auto 1fr auto`
-  rows plus `min-height: 100vh` give a sticky footer for free.
+- Holy grail: the named-area `.page` grid above; `auto 1fr auto` rows
+  plus `min-height: 100vh` give a sticky footer for free.
 - Sticky footer without grid: `body { min-height: 100vh; display: flex;
   flex-direction: column; } main { flex: 1; }`.
-- Sidebar + content: `grid-template-columns: minmax(220px, 1fr)
-  minmax(0, 3fr)`.
-- Card grid: `repeat(auto-fit, minmax(min(100%, 240px), 1fr))`; the
+- Sidebar + content: `grid-template-columns: minmax(220px, 1fr) minmax(0, 3fr)`.
+- Card grid: `repeat(auto-fit, minmax(min(100%, 240px), 1fr))` — the
   `min(100%, ...)` guard prevents overflow on narrow screens.
-- Masonry: multicol (`columns: 3; column-gap: 1rem;` plus
-  `break-inside: avoid;` on items). DOM order runs down columns, not
-  across; if reading order matters, use grid row spans or JS layout.
+- Masonry: multicol (`columns: 3;` plus `break-inside: avoid;` on
+  items). DOM order runs down columns; if reading order across rows
+  matters, use grid row spans or JS layout.
 
 ## Specificity and the Cascade
 
 Specificity counts (inline) > ids > classes, attributes, pseudo-classes
-> elements. Score selectors as `0-0-0-0` and compare position by
-position.
-
-```css
-/* 0-1-0 */ .btn { }
-/* 0-2-0 */ .btn.primary { }
-/* 1-0-0 */ #submit { }   /* avoid ids in CSS entirely */
-```
+> elements: score `#id .class attr` as `1-0-0`, `.class.class` as
+`0-2-0`. Avoid ids in CSS entirely — nothing overrides them but
+`!important`.
 
 Treat `!important` as a bug report: the cascade was arranged wrongly.
-Restructure selectors or use cascade layers, where later layers win
-regardless of selector specificity:
-
-```css
-@layer reset, base, components, utilities;
-@layer components { .btn { padding: 0.5em 1em; } }
-```
+Restructure selectors, or use cascade layers (`@layer reset, base,
+components, utilities;`) where later layers win regardless of selector
+specificity — the tool that tames third-party CSS.
 
 ## Common Pitfalls
 
 - Margin collapse: vertical margins between siblings and parents merge
-  into the larger one; flex/grid containers and padding block
-  collapsing. Prefer `gap`.
+  into the larger one; flex/grid containers and padding block it.
 - Stacking contexts: `z-index: 9999` loses to an ancestor context.
-  `opacity < 1`, `transform`, `filter`, and `isolation: isolate` each
+  `opacity < 1`, `transform`, `filter`, `isolation: isolate` each
   create a context; fix the tree, not the number.
 - Percentage of what? `width: 50%` resolves against the containing
   block's width; `height: 50%` needs a sized parent; vertical margins
@@ -216,5 +199,5 @@ regardless of selector specificity:
   flex or `font-size: 0` on the parent.
 - Bare `1fr` tracks overflow on long content: use `minmax(0, 1fr)`.
 - `100vh` is taller than mobile Safari's viewport: use `100dvh`.
-- Transitions to `height: auto` do not animate: animate `transform` or
-  `grid-template-rows: 0fr -> 1fr` instead.
+- Transitions to `height: auto` do not animate: animate `transform`
+  or `grid-template-rows: 0fr -> 1fr` instead.
