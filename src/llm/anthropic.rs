@@ -19,9 +19,17 @@ pub struct AnthropicProvider {
     api_key: String,
     /// Mark tools/system/last message with cache_control breakpoints.
     prompt_caching: bool,
+    /// Optional reasoning budget (anthropic `thinking`).
+    thinking_budget: Option<u64>,
 }
 
 impl AnthropicProvider {
+    /// Enable a reasoning budget on requests (anthropic `thinking`).
+    pub fn with_thinking_budget(mut self, budget: u64) -> Self {
+        self.thinking_budget = Some(budget);
+        self
+    }
+
     pub fn new(base_url: String, api_key: String, prompt_caching: bool) -> Self {
         let client = reqwest::Client::builder()
             .connect_timeout(std::time::Duration::from_secs(10))
@@ -32,6 +40,7 @@ impl AnthropicProvider {
             base_url: base_url.trim_end_matches('/').to_string(),
             api_key,
             prompt_caching,
+            thinking_budget: None,
         }
     }
 }
@@ -213,15 +222,28 @@ impl Provider for AnthropicProvider {
                 }
             }
         }
-        let body = json!({
-            "model": req.model,
-            "max_tokens": req.max_tokens,
-            "temperature": req.temperature,
-            "system": system,
-            "messages": messages,
-            "tools": serialize_tools(&req.tools, self.prompt_caching),
-            "stream": true,
-        });
+        let body = if let Some(budget) = self.thinking_budget {
+            json!({
+                "model": req.model,
+                "max_tokens": req.max_tokens,
+                "temperature": req.temperature,
+                "system": system,
+                "messages": messages,
+                "tools": serialize_tools(&req.tools, self.prompt_caching),
+                "thinking": {"type": "enabled", "budget_tokens": budget},
+                "stream": true,
+            })
+        } else {
+            json!({
+                "model": req.model,
+                "max_tokens": req.max_tokens,
+                "temperature": req.temperature,
+                "system": system,
+                "messages": messages,
+                "tools": serialize_tools(&req.tools, self.prompt_caching),
+                "stream": true,
+            })
+        };
         let request = self
             .client
             .post(&url)

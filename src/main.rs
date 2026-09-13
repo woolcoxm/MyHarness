@@ -213,11 +213,15 @@ fn build_provider(cfg: &Config) -> Result<Arc<dyn Provider>> {    match cfg.prov
                      or use --provider mock with MYHARNESS_MOCK_FILE=<script.json>"
                 )
             })?;
-            Ok(Arc::new(llm::anthropic::AnthropicProvider::new(
+            let mut p = llm::anthropic::AnthropicProvider::new(
                 cfg.base_url.clone(),
                 key,
                 cfg.prompt_caching,
-            )))
+            );
+            if let Some(b) = cfg.thinking_budget {
+                p = p.with_thinking_budget(b);
+            }
+            Ok(Arc::new(p))
         }
         ProviderKind::Openai => {
             let key = cfg.api_key.clone().ok_or_else(|| {
@@ -226,7 +230,11 @@ fn build_provider(cfg: &Config) -> Result<Arc<dyn Provider>> {    match cfg.prov
                      or use --provider mock with MYHARNESS_MOCK_FILE=<script.json>"
                 )
             })?;
-            Ok(Arc::new(llm::openai::OpenAiProvider::new(cfg.base_url.clone(), key)))
+            let mut p = llm::openai::OpenAiProvider::new(cfg.base_url.clone(), key);
+            if let Some(e) = &cfg.reasoning_effort {
+                p = p.with_reasoning_effort(e);
+            }
+            Ok(Arc::new(p))
         }
         ProviderKind::Mock => {
             let path = std::env::var("MYHARNESS_MOCK_FILE")

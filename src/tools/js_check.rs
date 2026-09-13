@@ -33,9 +33,12 @@ pub fn check_file(path: &Path) -> Option<String> {
     }
     let combined = blocks.join("\n;\n");
 
-    // Layer 1: the real parser, when present.
-    if let Some(err) = node_check(&combined).flatten() {
-        return Some(format!("{}: {err}", short(path)));
+    // Layer 1: the real parser, when present (bounded: a pathological
+    // multi-MB blob goes straight to the cheap lexical pass).
+    if combined.len() <= 1_000_000 {
+        if let Some(err) = node_check(&combined).flatten() {
+            return Some(format!("{}: {err}", short(path)));
+        }
     }
 
     // Layer 2: lexical fallback.

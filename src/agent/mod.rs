@@ -215,8 +215,19 @@ impl Agent {
             self.inject_turn_context();
         }
         let cwd_before = self.state.cwd.clone();
+        // Safety net: some continuation paths (schema retries, steering
+        // follow-ups, reflect) don't increment the turn counter — bound the
+        // raw loop so nothing can spin forever even if they interact badly.
+        let hard_cap = (self.effective_turn_cap() as usize).saturating_mul(4).max(40);
+        let mut iterations = 0usize;
 
         loop {
+            iterations += 1;
+            if iterations > hard_cap {
+                self.ui.warn("hard iteration cap reached; stopping this turn");
+                self.finish_turn(&cwd_before);
+                return Ok(TurnOutcome { final_text: String::new(), interrupted: false });
+            }
             if self.cancelled() {
                 return Ok(TurnOutcome { final_text: String::new(), interrupted: true });
             }
@@ -1709,6 +1720,8 @@ y"), (2, 0));
             web_fetch_private_hosts: false,
             output_hints: Vec::new(),
             zero_mem: crate::zero_mem::ZeroMemCfg::default(),
+            thinking_budget: None,
+            reasoning_effort: None,
             verbose: false,
             non_interactive: false,
         }

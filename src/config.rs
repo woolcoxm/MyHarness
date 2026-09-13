@@ -137,6 +137,12 @@ struct FileModel {
     model_fast: Option<String>,
     /// Anthropic-protocol prompt caching breakpoints (default true).
     prompt_caching: Option<bool>,
+    /// Reasoning budget for anthropic-protocol `thinking` (token budget —
+    /// the biggest per-request output lever; unset = provider default).
+    thinking_budget: Option<u64>,
+    /// Reasoning effort for openai-protocol `reasoning_effort`
+    /// (low | medium | high; unset = provider default).
+    reasoning_effort: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -199,6 +205,8 @@ pub struct Config {
     pub verify_cmd: Option<String>,
     pub restrict_writes_to_workspace: bool,
     pub prompt_caching: bool,
+    pub thinking_budget: Option<u64>,
+    pub reasoning_effort: Option<String>,
     pub bash_timeout_ms: u64,
     pub shell: ShellChoice,
     pub allow_rules: Vec<Rule>,
@@ -304,6 +312,8 @@ impl Config {
                 .as_ref()
                 .and_then(|m| m.prompt_caching)
                 .unwrap_or(true),
+            thinking_budget: file.model.as_ref().and_then(|m| m.thinking_budget),
+            reasoning_effort: file.model.as_ref().and_then(|m| m.reasoning_effort.clone()),
             bash_timeout_ms: file.bash.as_ref().and_then(|b| b.timeout_ms).unwrap_or(120_000).clamp(1_000, 600_000),
             shell: file.bash.as_ref().and_then(|b| b.shell).unwrap_or(ShellChoice::Auto),
             allow_rules,

@@ -43,6 +43,8 @@ fn test_config(dir: &Path) -> Arc<Config> {
         web_fetch_private_hosts: false,
         output_hints: vec![],
         zero_mem: myharness::zero_mem::ZeroMemCfg::default(),
+        thinking_budget: None,
+        reasoning_effort: None,
         verbose: false,
         non_interactive: true,
     })
