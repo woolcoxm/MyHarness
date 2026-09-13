@@ -113,7 +113,8 @@ async fn async_main() -> Result<()> {
         non_interactive,
     );
 
-    let mut ui = if non_interactive { Ui::quiet() } else { Ui::new() };
+    // Autonomous mode streams progress to the terminal; regular -p stays quiet.
+    let mut ui = if non_interactive && !cli.autonomous { Ui::quiet() } else { Ui::new() };
     let model = cfg.model.clone();
     let mut registry = tools::Registry::full();
     // MCP servers: bridge their tools; failures degrade to warnings.
