@@ -280,7 +280,7 @@ impl Config {
         let model = overrides
             .model
             .or(file.model.as_ref().and_then(|m| m.name.clone()))
-            .unwrap_or_else(|| "glm-5.3".to_string());
+            .unwrap_or_else(|| "glm-5.3-flash".to_string());
 
         let api_key = Self::resolve_api_key(provider, file.model.as_ref().and_then(|m| m.api_key_env.as_deref()));
 
@@ -410,28 +410,28 @@ impl Config {
     }
 
     fn resolve_api_key(provider: ProviderKind, file_env: Option<&str>) -> Option<String> {
+        // 1. Explicitly configured credentials (/login) always win — the
+        //    user chose them, they should never be shadowed by stale env vars.
+        if let Some(creds) = crate::auth::active_credentials() {
+            return Some(creds.api_key);
+        }
+        // 2. Explicit override env var
         if let Ok(k) = std::env::var("MYHARNESS_API_KEY") {
             if !k.is_empty() { return Some(k); }
         }
+        // 3. Config-specified env var name
         if let Some(name) = file_env {
             if let Ok(k) = std::env::var(name) {
                 if !k.is_empty() { return Some(k); }
             }
         }
+        // 4. Standard env vars (fallback)
         let candidates: &[&str] = match provider {
             ProviderKind::Anthropic => &["ZAI_API_KEY", "GLM_API_KEY", "ANTHROPIC_API_KEY"],
             ProviderKind::Openai => &["ZAI_API_KEY", "GLM_API_KEY", "OPENAI_API_KEY"],
             ProviderKind::Mock => &[],
         };
-        if let Some(k) = candidates.iter().find_map(|n| std::env::var(n).ok().filter(|v| !v.is_empty())) {
-            return Some(k);
-        }
-        // Try myharness's own credential store first
-        if let Some(creds) = crate::auth::active_credentials() {
-            return Some(creds.api_key);
-        }
-        // Fall back to pi agent's credentials if installed (shared coding plan)
-        Self::discover_pi_auth_key()
+        candidates.iter().find_map(|n| std::env::var(n).ok().filter(|v| !v.is_empty()))
     }
 
     /// Read the coding-plan API key from ~/.pi/agent/auth.json (legacy)
@@ -455,7 +455,7 @@ impl Config {
         let parsed: serde_json::Value = serde_json::from_str(&raw).ok()?;
         let models = parsed.get("zai-coding-cn")?.get("models")?.as_array()?;
         for m in models {
-            if m.get("id").and_then(|v| v.as_str()) == Some("glm-5.3") {
+            if m.get("id").and_then(|v| v.as_str()) == Some("glm-5.3-flash") {
                 return m.get("baseUrl").and_then(|v| v.as_str()).map(String::from);
             }
         }
@@ -579,7 +579,7 @@ pub fn default_config_toml() -> &'static str {
     r#"# myharness.toml — place in a project root or the user config dir.
 [model]
 provider = "anthropic"          # anthropic | openai | mock
-name = "glm-5.3"
+name = "glm-5.3-flash"
 base_url = "https://api.z.ai/api/anthropic"
 # api_key_env = "ZAI_API_KEY"   # env var to read the key from
 max_tokens = 16384
