@@ -91,7 +91,7 @@ fn serialize_messages(system: &str, messages: &[Message]) -> Vec<Value> {
                         _ => None,
                     })
                     .collect();
-                let mut v = json!({"role": "assistant"});
+                let mut v = json!({"role": "assistant", "content": Value::Null});
                 if !text.is_empty() {
                     v["content"] = json!(text);
                 }
@@ -113,7 +113,10 @@ impl Provider for OpenAiProvider {
 
     async fn stream(&self, req: &LlmRequest) -> Result<EventRx> {
         let url = format!("{}/chat/completions", self.base_url);
-        let body = json!({
+        // Z.ai coding plan: temperature is rejected when reasoning is active,
+        // and stream_options is not supported. Always send reasoning_effort
+        // so the model doesn't default to max reasoning.
+        let mut body = json!({
             "model": req.model,
             "messages": serialize_messages(&req.system, &req.messages),
             "tools": req.tools.iter().map(|t| json!({
@@ -125,13 +128,20 @@ impl Provider for OpenAiProvider {
                 }
             })).collect::<Vec<_>>(),
             "max_tokens": req.max_tokens,
-            "temperature": req.temperature,
             "stream": true,
-            "stream_options": {"include_usage": true},
         });
-        let mut body = body;
         if let Some(eff) = &self.thinking_effort {
             body["reasoning_effort"] = json!(eff);
+        } else {
+            // Default: medium reasoning (model burns all tokens without this)
+            body["reasoning_effort"] = json!("medium");
+        }
+        if std::env::var("MYHARNESS_DEBUG").map(|v| v == "1").unwrap_or(false) {
+            if let Ok(body_str) = serde_json::to_string(&body) {
+                let dump_path = std::env::temp_dir().join("mh-last-request.json");
+                let _ = std::fs::write(&dump_path, &body_str);
+                eprintln!("[DEBUG] -> POST {url} | body {} bytes | dumped to {}", body_str.len(), dump_path.display());
+            }
         }
         let request = self
             .client
@@ -278,6 +288,6 @@ mod tests {
         let wire = serialize_messages("sys", &messages);
         assert_eq!(wire[1]["tool_calls"][0]["function"]["name"], "read_file");
         assert_eq!(wire[1]["tool_calls"][0]["function"]["arguments"], r#"{"path":"x.rs"}"#);
-        assert!(wire[1].get("content").is_none(), "empty text should be omitted");
+        assert!(wire[1]["content"].is_null(), "content should be null when no text");
     }
 }
