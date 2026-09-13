@@ -24,7 +24,14 @@ impl Tool for TaskTool {
     }
 
     fn description(&self) -> &'static str {
-        "Spawn a subagent with fresh context. agent_type: explore (read-only) or build (+bash). Returns only the final report."
+        "Spawn a subagent to work in parallel with you. Each subagent gets a fresh context, a restricted tool set, and returns only its final report.
+Use subagents for:
+- Research: 'find all API endpoints in this codebase' (agent_type: explore)
+- Parallel coding: 'implement the auth module while I do the database' (agent_type: coder)
+- Testing: 'run the test suite and report failures' (agent_type: tester)
+- Code review: 'review the last commit for security issues' (agent_type: explore)
+- Web research: 'find the latest docs for library X' (agent_type: researcher)
+Fire MULTIPLE subagents in one message to work in parallel. Each returns independently."
     }
 
     fn schema(&self) -> Value {
@@ -32,7 +39,7 @@ impl Tool for TaskTool {
             json!({
                 "description": {"type": "string", "description": "3-5 word summary of the job"},
                 "prompt": {"type": "string", "description": "Complete, self-contained instructions for the subagent"},
-                "agent_type": {"type": "string", "enum": ["explore", "build"], "description": "Tool preset: explore (read-only search, default) or build (adds bash + bash_output for running commands)"},
+                "agent_type": {"type": "string", "enum": ["explore", "build", "coder", "tester", "researcher"], "description": "explore: read+search only. build: +bash. coder: +write/edit/bash for coding. tester: +bash/read for running tests. researcher: +web_fetch/web_search"},
                 "tools": {"type": "array", "items": {"type": "string"}, "description": "Extra tool names to enable beyond the preset"},
                 "max_turns": {"type": "integer", "description": "Hard turn cap (default 16)"},
                 "run_in_background": {"type": "boolean", "description": "Start the subagent and return immediately; poll its final report with bash_output (default false)"}
@@ -79,9 +86,30 @@ impl Tool for TaskTool {
                     }
                 }
             }
+            "coder" => {
+                for t in ["write_file", "edit_file", "bash", "bash_output"] {
+                    if !tool_names.iter().any(|n| n == t) {
+                        tool_names.push(t.to_string());
+                    }
+                }
+            }
+            "tester" => {
+                for t in ["bash", "bash_output", "read_file"] {
+                    if !tool_names.iter().any(|n| n == t) {
+                        tool_names.push(t.to_string());
+                    }
+                }
+            }
+            "researcher" => {
+                for t in ["web_fetch", "web_search"] {
+                    if !tool_names.iter().any(|n| n == t) {
+                        tool_names.push(t.to_string());
+                    }
+                }
+            }
             other => {
                 return ToolOutput::err(format!(
-                    "invalid agent_type '{other}' (use \"explore\" or \"build\", or omit for explore)"
+                    "invalid agent_type '{other}' (use explore, build, coder, tester, or researcher)"
                 ));
             }
         }
@@ -94,8 +122,8 @@ impl Tool for TaskTool {
         }
         let max_turns = super::opt_u64(&input, "max_turns")
             .unwrap_or(None)
-            .unwrap_or(16)
-            .clamp(2, 40) as u32;
+            .unwrap_or(40)
+            .clamp(2, 80) as u32;
         let run_in_background = super::opt_bool(&input, "run_in_background")
             .unwrap_or(None)
             .unwrap_or(false);
