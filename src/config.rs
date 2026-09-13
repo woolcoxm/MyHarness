@@ -280,7 +280,7 @@ impl Config {
         let model = overrides
             .model
             .or(file.model.as_ref().and_then(|m| m.name.clone()))
-            .unwrap_or_else(|| "glm-5.3-flash".to_string());
+            .unwrap_or_else(|| "glm-5.3".to_string());
 
         let api_key = Self::resolve_api_key(provider, file.model.as_ref().and_then(|m| m.api_key_env.as_deref()));
 
@@ -434,14 +434,6 @@ impl Config {
         candidates.iter().find_map(|n| std::env::var(n).ok().filter(|v| !v.is_empty()))
     }
 
-    /// Read the coding-plan API key from ~/.pi/agent/auth.json (legacy)
-    fn discover_pi_auth_key() -> Option<String> {
-        let path = dirs::home_dir()?.join(".pi").join("agent").join("auth.json");
-        let raw = std::fs::read_to_string(path).ok()?;
-        let parsed: serde_json::Value = serde_json::from_str(&raw).ok()?;
-        let key = parsed.get("zai-coding-cn")?.get("key")?.as_str()?;
-        (!key.is_empty()).then(|| key.to_string())
-    }
 
     /// Discover the coding-plan base URL from myharness auth or pi's model store.
     pub fn discover_coding_plan_base_url() -> Option<String> {
@@ -455,7 +447,7 @@ impl Config {
         let parsed: serde_json::Value = serde_json::from_str(&raw).ok()?;
         let models = parsed.get("zai-coding-cn")?.get("models")?.as_array()?;
         for m in models {
-            if m.get("id").and_then(|v| v.as_str()) == Some("glm-5.3-flash") {
+            if m.get("id").and_then(|v| v.as_str()) == Some("glm-5.3") {
                 return m.get("baseUrl").and_then(|v| v.as_str()).map(String::from);
             }
         }
@@ -579,7 +571,7 @@ pub fn default_config_toml() -> &'static str {
     r#"# myharness.toml — place in a project root or the user config dir.
 [model]
 provider = "anthropic"          # anthropic | openai | mock
-name = "glm-5.3-flash"
+name = "glm-5.3"
 base_url = "https://api.z.ai/api/anthropic"
 # api_key_env = "ZAI_API_KEY"   # env var to read the key from
 max_tokens = 16384
