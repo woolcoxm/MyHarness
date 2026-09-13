@@ -873,3 +873,51 @@ and newest-wins; snippet sanitization; store round-trip + retention;
 fingerprint normalization; near-duplicate dedupe) plus an end-to-end
 integration test: session A states a fact, session B in the same project
 receives it as an injected memory before its first reply.
+
+
+## v0.18.1–v0.18.3 — the live-testing round
+
+v0.18 shipped; then it met the real API, the real CI runners, and a real
+A/B memory test. Each surface found something. All numbers below are from
+the three-way benchmark (same three.js game prompt through ZCode, pi, and
+myharness; details in BENCHMARK.md).
+
+- **Usage visibility** (v0.18.1): `-p` prints a usage line (requests,
+  in/out, cache read/write) to stderr so pipelines stay clean while spend
+  is visible; `prompt_budget` regression test pins the model-facing floor
+  (~3.8k tokens) so it can only grow deliberately; economy preset + a
+  "Running on a token budget" README section.
+- **Live-API fixes** (v0.18.2): the Z.ai gateway reports input_tokens: 0
+  in message_start and real usage only in the final message_delta — the
+  provider now parses both (first live run showed in=0). `-p` persists a
+  session transcript (it is the debug record and usage history, not just
+  an interactive artifact). A first live run also produced an empty result:
+  with default max_tokens=16384 the model's single giant write_file (whole
+  game + reasoning) hit the length cap; the v0.17 truncation guard refused
+  the call correctly — long builds need an explicit output budget.
+- **Script syntax gate** (v0.18.2): the benchmark's live build shipped an
+  intermediate file with `identifier starts immediately after numeric
+  literal` and nothing structural caught it — the other harnesses' arms
+  passed because they ran `node --check`. `tools/js_check` now validates
+  every written .js/.mjs/.ts/.html (node --check on a temp module copy;
+  string/comment/template-aware lexical fallback for numeric-identifier
+  collisions and unbalanced brackets when node is absent; import maps and
+  external scripts skipped). Failures set the reflect flag: a syntax error
+  cannot end a turn unfixed.
+- **Zero-mem live A/B** (v0.18.3): two real sessions on the live API
+  found three bugs — identity-class queries suppressed evidence retrieval
+  (mutual exclusion; now independent, regression-tested), concurrent
+  processes sharing a store silently dropped each other's captures
+  (colliding u1/u2 ids + merge-by-id; ids are session-prefixed now,
+  concurrency-tested), and the model told the user "I don't have built-in
+  memory" because the prompt never disclosed the feature (BASE_PROMPT now
+  states the injection format and its not-authoritative status). Post-fix
+  verification: a fresh session answers stored facts and the user's name
+  entirely from injected memory.
+- **CI first exposure** (v0.18.2): the workflow had never run on a runner
+  before the repo went public. Four latent failures fixed — LSP unix URIs
+  (double root slash), Windows 8.3 short-name guard keys (canon now
+  canonicalizes the deepest existing ancestor and re-appends the missing
+  tail), example binaries not emitted by `cargo test --all-targets`
+  (tests build them on demand via ensure_example), and a relative
+  MYHARNESS_MOCK_FILE in the smoke step. Both matrix legs green since.
