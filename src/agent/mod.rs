@@ -447,6 +447,39 @@ impl Agent {
                     self.persist(&Event::Message(msg));
                     self.verify_failed = !ok;
                 }
+                // Script syntax gate: written JS/HTML-with-JS must parse
+                // (node --check when present, lexical fallback otherwise).
+                // The reflect loop makes fixing a precondition for ending
+                // the turn — a syntax error can no longer ship.
+                {
+                    let targets: Vec<PathBuf> = tool_uses
+                        .iter()
+                        .filter(|(_, n, _)| n == "write_file" || n == "edit_file")
+                        .filter_map(|(_, _, input)| input.get("path").and_then(|v| v.as_str()))
+                        .map(|p| crate::tools::resolve_path(&self.state.cwd, p))
+                        .filter(|p| {
+                            matches!(
+                                p.extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase()).as_deref(),
+                                Some("js") | Some("mjs") | Some("ts") | Some("html") | Some("htm")
+                            )
+                        })
+                        .collect();
+                    let problems: Vec<String> = targets
+                        .iter()
+                        .filter_map(|p| crate::tools::js_check::check_file(p))
+                        .collect();
+                    if !problems.is_empty() {
+                        self.verify_failed = true;
+                        let msg = Message::user_text(format!(
+                            "(script check) your written code has syntax errors — fix them now:
+{}",
+                            problems.join("
+")
+                        ));
+                        self.state.messages.push(msg.clone());
+                        self.persist(&Event::Message(msg));
+                    }
+                }
                 // LSP diagnostics for the edited files (config-gated): the
                 // model sees errors/warnings per file before continuing.
                 if !self.cfg.lsp_servers.is_empty() {

@@ -1,0 +1,350 @@
+//! Script syntax gate: written JavaScript must parse. Two layers:
+//!
+//! 1. `node --check` on a temp module copy when node is available (the
+//!    authoritative parser — this is exactly how the winning harnesses in
+//!    the three-way benchmark caught what we missed).
+//! 2. A dependency-free lexical fallback when node is absent: string- and
+//!    comment-aware scanning that catches the two most common model
+//!    failure classes — "identifier starts immediately after numeric
+//!    literal" (`1px`, `2d`) and unbalanced braces/parens/brackets.
+//!
+//! Best-effort by law: a missing node or an unreadable file never fails a
+//! turn; problems are reported to the model, and the reflect loop makes
+//! fixing them a precondition for ending the turn.
+
+use std::path::Path;
+
+/// Check one written file. Returns a problem report, or None when clean
+/// (or when nothing checkable applied).
+pub fn check_file(path: &Path) -> Option<String> {
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase())
+        .unwrap_or_default();
+    let source = std::fs::read_to_string(path).ok()?;
+    let blocks: Vec<String> = match ext.as_str() {
+        "js" | "mjs" | "ts" => vec![source],
+        "html" | "htm" => extract_inline_scripts(&source),
+        _ => return None,
+    };
+    if blocks.is_empty() {
+        return None;
+    }
+    let combined = blocks.join("\n;\n");
+
+    // Layer 1: the real parser, when present.
+    if let Some(err) = node_check(&combined).flatten() {
+        return Some(format!("{}: {err}", short(path)));
+    }
+
+    // Layer 2: lexical fallback.
+    lexical_check(&combined).map(|err| format!("{}: {err}", short(path)))
+}
+
+fn short(p: &Path) -> String {
+    p.file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| p.display().to_string())
+}
+
+/// Inline JS blocks of an HTML document; skips import maps and external
+/// (src=) scripts — the import map is JSON, not JS.
+pub fn extract_inline_scripts(html: &str) -> Vec<String> {
+    let bytes = html.as_bytes();
+    let lower = html.to_ascii_lowercase();
+    let mut out = Vec::new();
+    let mut i = 0usize;
+    while let Some(start) = lower[i..].find("<script") {
+        let start = i + start;
+        let Some(tag_end) = lower[start..].find('>') else { break };
+        let tag_end = start + tag_end;
+        let attrs = &lower[start..tag_end];
+        if attrs.contains("importmap") || attrs.contains("src=") {
+            i = tag_end + 1;
+            continue;
+        }
+        let body_start = tag_end + 1;
+        let Some(close) = lower[body_start..].find("</script") else { break };
+        out.push(html[body_start..body_start + close].to_string());
+        i = body_start + close;
+        let _ = bytes;
+    }
+    out
+}
+
+/// `node --check` on a temp module copy. None = node unavailable; Some(None)
+/// = clean; Some(Some(err)) = parse failure (first error line, mangled to
+/// the harness error style).
+fn node_check(code: &str) -> Option<Option<String>> {
+    // Unique name: parallel checks (tests, concurrent writes) must not
+    // overwrite each other's script.
+    let tmp = std::env::temp_dir().join(format!(
+        "mh-jscheck-{}.mjs",
+        &uuid::Uuid::new_v4().simple().to_string()[..12]
+    ));
+    if std::fs::write(&tmp, code).is_err() {
+        return None;
+    }
+    let out = std::process::Command::new("node")
+        .arg("--check")
+        .arg(&tmp)
+        .output();
+    let _ = std::fs::remove_file(&tmp);
+    let Ok(out) = out else {
+        return None; // node not installed — fall back
+    };
+    if out.status.success() {
+        return Some(None);
+    }
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let first = stderr
+        .lines()
+        .find(|l| l.contains("SyntaxError") || l.contains("Error:"))
+        .unwrap_or("syntax error");
+    Some(Some(first.to_string()))
+}
+
+/// Lexical pass: catches numeric-literal/identifier collisions and
+/// unbalanced brackets, outside strings/comments/template literals.
+pub fn lexical_check(code: &str) -> Option<String> {
+    let chars: Vec<char> = code.chars().collect();
+    let mut i = 0usize;
+    let mut stack: Vec<(char, usize)> = Vec::new();
+
+    while i < chars.len() {
+        let c = chars[i];
+        // Comments.
+        if c == '/' && chars.get(i + 1) == Some(&'/') {
+            while i < chars.len() && chars[i] != '\n' {
+                i += 1;
+            }
+            continue;
+        }
+        if c == '/' && chars.get(i + 1) == Some(&'*') {
+            i += 2;
+            while i + 1 < chars.len() && !(chars[i] == '*' && chars[i + 1] == '/') {
+                i += 1;
+            }
+            i += 2;
+            continue;
+        }
+        // Strings (skipped; escapes respected).
+        if c == '"' || c == '\'' {
+            let quote = c;
+            i += 1;
+            while i < chars.len() && chars[i] != quote {
+                if chars[i] == '\\' {
+                    i += 1;
+                }
+                if chars[i] == '\n' {
+                    break; // unterminated string: the parser will say so
+                }
+                i += 1;
+            }
+            i += 1;
+            continue;
+        }
+        // Template literals: skip to the closing backtick, but honor
+        // ${ ... } nesting so braces inside are still bracket-checked.
+        if c == '`' {
+            i += 1;
+            while i < chars.len() && chars[i] != '`' {
+                if chars[i] == '\\' {
+                    i += 2;
+                    continue;
+                }
+                if chars[i] == '$' && chars.get(i + 1) == Some(&'{') {
+                    stack.push(('{', i));
+                    i += 2;
+                    // Resume normal scanning inside the interpolation; the
+                    // pushed '{' closes at the matching '}'.
+                    break;
+                }
+                i += 1;
+            }
+            continue;
+        }
+        // Bracket balance.
+        if c == '(' || c == '[' || c == '{' {
+            stack.push((c, i));
+        } else if c == ')' || c == ']' || c == '}' {
+            match stack.pop() {
+                Some((open, _)) if matches!(open, '(') && c == ')'
+                    || matches!(open, '[') && c == ']'
+                    || matches!(open, '{') && c == '}' => {}
+                _ => {
+                    return Some(format!(
+                        "unbalanced '{c}' near line {}",
+                        line_of(&chars, i)
+                    ));
+                }
+            }
+        }
+        // Numeric literal followed by an identifier start: the browser's
+        // "identifier starts immediately after numeric literal".
+        if c.is_ascii_digit() {
+            let (end, ok) = scan_number(&chars, i);
+            if let Some(next) = chars.get(end) {
+                if next.is_ascii_alphabetic() || *next == '_' || *next == '$' {
+                    let snippet: String = chars[i..(end + 6).min(chars.len())].iter().collect();
+                    return Some(format!(
+                        "identifier starts immediately after numeric literal (`{snippet}...`) near line {}",
+                        line_of(&chars, i)
+                    ));
+                }
+            }
+            if !ok {
+                // Not even a well-formed number per our grammar — let node
+                // be the authority when present; here just move on.
+            }
+            i = end;
+            continue;
+        }
+        i += 1;
+    }
+    if let Some((open, at)) = stack.last() {
+        return Some(format!(
+            "unbalanced '{open}' opened near line {} and never closed",
+            line_of(&chars, *at)
+        ));
+    }
+    None
+}
+
+/// Scan a numeric literal per JS grammar; returns (end_index, well_formed).
+fn scan_number(chars: &[char], start: usize) -> (usize, bool) {
+    let is_digit = |c: char| c.is_ascii_digit() || c == '_';
+    // Radix prefixes.
+    if chars[start] == '0' && start + 1 < chars.len() {
+        let radix_char = chars[start + 1].to_ascii_lowercase();
+        if matches!(radix_char, 'x' | 'b' | 'o') {
+            let mut j = start + 2;
+            while j < chars.len() && (chars[j].is_ascii_alphanumeric() || chars[j] == '_') {
+                j += 1;
+            }
+            return (j, true);
+        }
+    }
+    // Decimal / float / exponent / BigInt.
+    let mut j = start;
+    while j < chars.len() && is_digit(chars[j]) {
+        j += 1;
+    }
+    if j < chars.len() && chars[j] == '.' {
+        j += 1;
+        while j < chars.len() && is_digit(chars[j]) {
+            j += 1;
+        }
+    }
+    if j < chars.len() && (chars[j] == 'e' || chars[j] == 'E') {
+        let mut k = j + 1;
+        if k < chars.len() && (chars[k] == '+' || chars[k] == '-') {
+            k += 1;
+        }
+        if k < chars.len() && chars[k].is_ascii_digit() {
+            j = k;
+            while j < chars.len() && is_digit(chars[j]) {
+                j += 1;
+            }
+        }
+        // else: 'e' not part of the number (an identifier may follow a
+        // plain integer only as an error — handled by the caller).
+    }
+    if j < chars.len() && (chars[j] == 'n') && !chars.get(j + 1).is_some_and(|c| c.is_ascii_alphanumeric() || *c == '_') {
+        j += 1; // BigInt suffix
+    }
+    (j, true)
+}
+
+fn line_of(chars: &[char], at: usize) -> usize {
+    chars[..at.min(chars.len())].iter().filter(|c| **c == '\n').count() + 1
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extracts_inline_scripts_but_not_importmap_or_src() {
+        let html = r#"<html><head>
+<script type="importmap">{"imports": {"three": "x"}}</script>
+<script src="cdn.js"></script>
+</head><body>
+<script>const a = 1;</script>
+<script type="module">const b = 2;</script>
+</body></html>"#;
+        let blocks = extract_inline_scripts(html);
+        assert_eq!(blocks.len(), 2, "{blocks:?}");
+        assert!(blocks[0].contains("const a"));
+        assert!(blocks[1].contains("const b"));
+    }
+
+    #[test]
+    fn lexical_catches_numeric_identifier_collisions() {
+        assert!(lexical_check("const x = 1px;").is_some());
+        assert!(lexical_check("ctx.translate(2d);").is_some());
+        assert!(lexical_check("let v = 12abc;").is_some());
+    }
+
+    #[test]
+    fn lexical_accepts_valid_numeric_forms() {
+        for ok in [
+            "const a = 0xff;",
+            "const b = 1e5;",
+            "const c = 1_000;",
+            "const d = 10n;",
+            "const e = 3.14;",
+            "const f = .5 + 1e-3;",
+            "const g = 0b1010 + 0o777;",
+        ] {
+            assert!(lexical_check(ok).is_none(), "false positive on: {ok}");
+        }
+    }
+
+    #[test]
+    fn lexical_is_string_and_comment_aware() {
+        // Numbers in strings and comments must not trip the check; braces
+        // in strings must not count.
+        let ok = r#"
+            const s = "1px and } unbalanced { text";
+            // 2d comment 3d
+            /* 5zz */
+            const t = `template ${1 + 2} numbers`;
+            const obj = { a: 1 };
+        "#;
+        assert!(lexical_check(ok).is_none(), "{:?}", lexical_check(ok));
+        // Real imbalance IS caught.
+        assert!(lexical_check("function f( {").is_some());
+        assert!(lexical_check("const o = { a: 1;").is_some());
+    }
+
+    #[test]
+    fn node_check_catches_a_real_syntax_error() {
+        // Skips gracefully when node is absent; on this repo's dev/CI
+        // machines node exists and must flag this.
+        let verdict = node_check("const x = ;;");
+        if let Some(v) = verdict {
+            assert!(v.is_some(), "node should reject `const x = ;`");
+        }
+        let clean = node_check("const x = 1 + 2;");
+        if let Some(v) = clean {
+            assert!(v.is_none());
+        }
+    }
+
+    #[test]
+    fn check_file_end_to_end_on_html() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("game.html");
+        std::fs::write(
+            &p,
+            "<html><body><script>const w = 12; const h = 0x10; const bad = 1px;</script></body></html>",
+        )
+        .unwrap();
+        let report = check_file(&p);
+        assert!(report.is_some(), "{report:?}");
+        let r = report.unwrap();
+        assert!(r.contains("numeric") || r.to_lowercase().contains("syntax"), "{r}");
+    }
+}

@@ -14,6 +14,7 @@ pub mod bash_output;
 pub mod edit_file;
 pub mod glob;
 pub mod grep;
+pub mod js_check;
 pub mod ls;
 pub mod monitor;
 pub mod net_guard;
