@@ -31,7 +31,7 @@ pub struct Cli {
     /// self-check prompt asks it to verify — if it finds more work, it
     /// continues; if it confirms done twice in a row, the goal completes.
     /// Bounded by --budget-hours and --budget-tokens.
-    #[arg(long, requires = "print")]
+    #[arg(long)]
     pub autonomous: bool,
 
     /// Autonomous mode: wall-clock budget in hours (default 8).

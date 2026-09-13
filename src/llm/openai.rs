@@ -91,7 +91,7 @@ fn serialize_messages(system: &str, messages: &[Message]) -> Vec<Value> {
                         _ => None,
                     })
                     .collect();
-                let mut v = json!({"role": "assistant", "content": Value::Null});
+                let mut v = json!({"role": "assistant", "content": ""});
                 if !text.is_empty() {
                     v["content"] = json!(text);
                 }
@@ -288,6 +288,6 @@ mod tests {
         let wire = serialize_messages("sys", &messages);
         assert_eq!(wire[1]["tool_calls"][0]["function"]["name"], "read_file");
         assert_eq!(wire[1]["tool_calls"][0]["function"]["arguments"], r#"{"path":"x.rs"}"#);
-        assert!(wire[1]["content"].is_null(), "content should be null when no text");
+        assert_eq!(wire[1]["content"], "", "content should be empty string when no text");
     }
 }
