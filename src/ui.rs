@@ -65,6 +65,8 @@ pub struct Ui {
     /// A thinking run just printed without a trailing newline; the next
     /// real output starts on a fresh line.
     thinking_open: bool,
+    /// When true, all output goes to stderr instead of stdout.
+    use_stderr: bool,
 }
 
 impl Default for Ui {
@@ -81,21 +83,35 @@ fn notify(tx: &UnboundedSender<String>, method: &str, params: &str) {
 
 impl Ui {
     pub fn new() -> Self {
-        Ui { quiet: false, channel: None, events: None, at_line_start: true, thinking_open: false }
+        Ui { quiet: false, channel: None, events: None, at_line_start: true, thinking_open: false, use_stderr: false }
     }
 
     pub fn quiet() -> Self {
-        Ui { quiet: true, channel: None, events: None, at_line_start: true, thinking_open: false }
+        Ui { quiet: true, channel: None, events: None, at_line_start: true, thinking_open: false, use_stderr: false }
+    }
+
+    /// Redirect all output to stderr (used by autonomous mode so stdout
+    /// stays clean for the final answer and terminal wrapping is avoided).
+    pub fn redirect_to_stderr(&mut self) {
+        self.use_stderr = true;
+    }
+
+    fn out_to(&self, s: &str) {
+        if self.use_stderr {
+            eprintln!("{s}");
+        } else {
+            println!("{s}");
+        }
     }
 
     /// serve mode: all events become JSON notification lines on the channel.
     pub fn channel(tx: UnboundedSender<String>) -> Self {
-        Ui { quiet: true, channel: Some(tx), events: None, at_line_start: true, thinking_open: false }
+        Ui { quiet: true, channel: Some(tx), events: None, at_line_start: true, thinking_open: false, use_stderr: false }
     }
 
     /// tui mode: all events are sent typed on the channel.
     pub fn events(tx: UnboundedSender<UiEvent>) -> Self {
-        Ui { quiet: true, channel: None, events: Some(tx), at_line_start: true, thinking_open: false }
+        Ui { quiet: true, channel: None, events: Some(tx), at_line_start: true, thinking_open: false, use_stderr: false }
     }
 
     fn out(&mut self, s: &str) {
@@ -123,7 +139,7 @@ impl Ui {
             notify(tx, "mh/turn.delta", &format!("{{\"text\":{}}}", serde_json::json!(s)));
             return;
         }
-        if self.quiet {
+        if self.quiet || self.use_stderr {
             return;
         }
         if self.thinking_open {
@@ -146,7 +162,7 @@ impl Ui {
             notify(tx, "mh/turn.thinking", &format!("{{\"text\":{}}}", serde_json::json!(s)));
             return;
         }
-        if self.quiet {
+        if self.quiet || self.use_stderr {
             return;
         }
         for line in s.split_inclusive('\n') {
@@ -185,6 +201,11 @@ impl Ui {
             );
             return;
         }
+        if self.use_stderr {
+            let label = if summary.is_empty() { name.to_string() } else { format!("{name}({summary})") };
+            eprintln!("  > {label}");
+            return;
+        }
         if self.quiet {
             return;
         }
@@ -220,6 +241,12 @@ impl Ui {
                     serde_json::json!(first)
                 ),
             );
+            return;
+        }
+        if self.use_stderr {
+            let first = result.content.lines().next().unwrap_or("").chars().take(100).collect::<String>();
+            let mark = if result.is_error { "!" } else { "ok" };
+            eprintln!("    {mark} {first}");
             return;
         }
         if self.quiet {
@@ -261,6 +288,10 @@ impl Ui {
         }
         if let Some(tx) = &self.channel {
             notify(tx, "mh/info", &format!("{{\"text\":{}}}", serde_json::json!(s)));
+            return;
+        }
+        if self.use_stderr {
+            eprintln!("== {s}");
             return;
         }
         self.ensure_newline();

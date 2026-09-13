@@ -114,8 +114,14 @@ async fn async_main() -> Result<()> {
         non_interactive,
     );
 
-    // Autonomous mode streams progress to the terminal; regular -p stays quiet.
+    // Autonomous mode streams progress to stderr (not stdout — that stays
+    // clean for the final answer). Regular -p stays quiet.
     let mut ui = if non_interactive && !cli.autonomous { Ui::quiet() } else { Ui::new() };
+    if cli.autonomous {
+        // Redirect all Ui output to stderr to avoid terminal wrapping issues
+        // and keep stdout clean for the final answer.
+        ui.redirect_to_stderr();
+    }
     let model = cfg.model.clone();
     let mut registry = tools::Registry::full();
     // MCP servers: bridge their tools; failures degrade to warnings.
@@ -208,10 +214,10 @@ async fn autonomous_run(agent: &mut Agent, task: &str, cli: &cli::Cli) -> Result
     let deadline = std::time::Instant::now()
         + std::time::Duration::from_secs_f64(hours * 3600.0);
     // 1M tokens per hour of runtime (coding plan budget rate).
-    let token_budget = cli.budget_tokens.unwrap_or((hours * 1_000_000.0) as u64);
+    let token_budget = cli.budget_tokens.unwrap_or((hours * 8_000_000.0) as u64);
 
     eprintln!(
-        "-- autonomous: budget {}h / {}M tokens (1M/h) | task: {}",
+        "-- autonomous: budget {}h / {}M tokens (8M/h) | task: {}",
         hours,
         token_budget / 1_000_000,
         task.chars().take(80).collect::<String>()
