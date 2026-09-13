@@ -94,17 +94,13 @@ async fn async_main() -> Result<()> {
         }
     };
 
-    // Default modes: -p runs auto-edit (bash follows allow rules); the TUI
-    // asks. --yolo/--mode always win. Autonomous implies yolo — unattended
-    // agents can't stop to ask.
-    let mode = if cli.yolo || cli.autonomous {
-        PermissionMode::Yolo
-    } else if let Some(m) = &cli.mode {
+    // Default: yolo. The safety nets (workspace scoping, SSRF guard,
+    // stale-context guard, script gate) are mode-independent and always on.
+    // --mode overrides for users who want plan/ask/auto-edit.
+    let mode = if let Some(m) = &cli.mode {
         PermissionMode::parse(m).with_context(|| format!("invalid --mode '{m}'"))?
-    } else if non_interactive {
-        PermissionMode::AutoEdit
     } else {
-        PermissionMode::Ask
+        PermissionMode::Yolo
     };
 
     let perms = PermissionEngine::new(
