@@ -11,7 +11,7 @@
 //!   "providers": {
 //!     "coding-plan": {
 //!       "api_key": "<obfuscated>",
-//!       "base_url": "https://api.z.ai/api/coding/paas/v4",
+//!       "base_url": "https://open.bigmodel.cn/api/coding/paas/v4",
 //!       "model": "glm-5.3",
 //!       "protocol": "openai"
 //!     },

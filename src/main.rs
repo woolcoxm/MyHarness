@@ -448,7 +448,7 @@ fn login_cli() -> Result<()> {
     let (name, default_url, default_model, protocol) = match choice.trim() {
         "1" => (
             "coding-plan",
-            "https://api.z.ai/api/coding/paas/v4".to_string(),
+            "https://open.bigmodel.cn/api/coding/paas/v4".to_string(),
             "glm-5.3".to_string(),
             "openai",
         ),
