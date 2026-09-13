@@ -211,12 +211,11 @@ async fn autonomous_run(agent: &mut Agent, task: &str, cli: &cli::Cli) -> Result
     );
 
     let mut done_confirmed = 0u32;
-    let mut last_final = String::new();
     let start = std::time::Instant::now();
 
     // The first turn runs the task.
     let outcome = agent.run_turn(task).await?;
-    last_final = outcome.final_text.clone();
+    let mut last_final = outcome.final_text;
 
     loop {
         // Budget checks.
@@ -268,7 +267,7 @@ async fn autonomous_run(agent: &mut Agent, task: &str, cli: &cli::Cli) -> Result
              requirement, do that work now using the tools available."
         ;
 
-        let check = agent.run_turn(&check_prompt).await?;
+        let check = agent.run_turn(check_prompt).await?;
         let check_text = check.final_text.trim().to_string();
 
         if check_text.contains("GOAL COMPLETE") {
