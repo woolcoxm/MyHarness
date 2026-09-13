@@ -22,9 +22,25 @@ pub struct Cli {
     /// With -p: validate the final message as JSON against this schema
     /// (inline JSON or a path to a .json file). Subset: type, properties,
     /// required, items, enum. Invalid output gets corrective retries; a
-    /// still-invalid final result exits non-zero.
+    /// still-invalid result exits non-zero.
     #[arg(long, requires = "print")]
     pub output_schema: Option<String>,
+
+    /// Autonomous mode: work until verified done, not until the model
+    /// stops. Each time the model ends its turn without tool calls, a
+    /// self-check prompt asks it to verify — if it finds more work, it
+    /// continues; if it confirms done twice in a row, the goal completes.
+    /// Bounded by --budget-hours and --budget-tokens.
+    #[arg(long, requires = "print")]
+    pub autonomous: bool,
+
+    /// Autonomous mode: wall-clock budget in hours (default 8).
+    #[arg(long, requires = "autonomous")]
+    pub budget_hours: Option<f64>,
+
+    /// Autonomous mode: total token budget (input + output, default 2M).
+    #[arg(long, requires = "autonomous")]
+    pub budget_tokens: Option<u64>,
 
     /// Model name (default glm-5.3).
     #[arg(long, global = true)]

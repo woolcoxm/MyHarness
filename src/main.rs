@@ -148,7 +148,10 @@ async fn async_main() -> Result<()> {
     }
 
     if non_interactive {
-        let task = cli.task.unwrap();
+        let task = cli.task.clone().unwrap_or_default();
+        if cli.autonomous {
+            return autonomous_run(&mut agent, &task, &cli).await;
+        }
         let outcome = agent.run_turn(&task).await?;
         println!("{}", outcome.final_text.trim());
         // Usage metrics go to stderr so stdout stays clean for pipes.
@@ -187,6 +190,136 @@ async fn async_main() -> Result<()> {
         return tui::run(agent).await;
     }
     ui::repl(agent).await
+}
+
+/// Autonomous mode: work until verified done, bounded by time and token
+/// budgets. The key insight (from ZCode's goal loop): the model ending its
+/// turn without tool calls doesn't mean done — it often means it forgot,
+/// assumed, or gave up. This loop injects a self-check prompt each time,
+/// requiring two consecutive confirmed "done" turns to complete, and a
+/// single "I found more work" to keep going.
+async fn autonomous_run(agent: &mut Agent, task: &str, cli: &cli::Cli) -> Result<()> {
+    let deadline = std::time::Instant::now()
+        + std::time::Duration::from_secs_f64(cli.budget_hours.unwrap_or(8.0) * 3600.0);
+    let token_budget = cli.budget_tokens.unwrap_or(2_000_000);
+
+    eprintln!(
+        "-- autonomous: budget {}h / {}M tokens | task: {}",
+        cli.budget_hours.unwrap_or(8.0),
+        token_budget / 1_000_000,
+        task.chars().take(80).collect::<String>()
+    );
+
+    let mut done_confirmed = 0u32;
+    let mut last_final = String::new();
+    let start = std::time::Instant::now();
+
+    // The first turn runs the task.
+    let outcome = agent.run_turn(task).await?;
+    last_final = outcome.final_text.clone();
+
+    loop {
+        // Budget checks.
+        let elapsed = start.elapsed();
+        let total_tokens = agent.state.usage.input_tokens
+            + agent.state.usage.output_tokens
+            + agent.state.usage.cache_read_tokens;
+        if std::time::Instant::now() >= deadline {
+            eprintln!(
+                "-- autonomous: time budget exhausted ({:.1}h, {} requests, {} turns)",
+                elapsed.as_secs_f32() / 3600.0,
+                agent.state.requests,
+                agent.state.turns
+            );
+            break;
+        }
+        if total_tokens >= token_budget {
+            eprintln!(
+                "-- autonomous: token budget exhausted ({}/{}, {} requests, {} turns)",
+                total_tokens,
+                token_budget,
+                agent.state.requests,
+                agent.state.turns
+            );
+            break;
+        }
+
+        // Self-check: the model stopped — is it really done?
+        // Two consecutive confirmations = goal complete. Any tool call in
+        // the self-check response = found more work, keep going.
+        eprintln!(
+            "-- autonomous: self-check round {} (turns: {}, tokens: {:.0}k/{:.0}k, {:.1}h/{:.1}h)",
+            done_confirmed + 1,
+            agent.state.turns,
+            total_tokens as f64 / 1000.0,
+            token_budget as f64 / 1000.0,
+            elapsed.as_secs_f32() / 3600.0,
+            cli.budget_hours.unwrap_or(8.0),
+        );
+
+        let check_prompt = "(autonomous self-check) You just stopped working without any tool calls. \
+             Before confirming the goal is complete, verify your work:\n\
+             - Did you actually run the build/tests to confirm it works? (bash: cargo test, \
+             npm test, or the project's check command)\n\
+             - Did you read back every file you created/modified to check for syntax errors?\n\
+             - Is there anything in the original task description you haven't addressed?\n\n\
+             If everything is verified and complete, reply with exactly: GOAL COMPLETE\n\
+             If there is any remaining work, any untested change, or any unaddressed \
+             requirement, do that work now using the tools available."
+        ;
+
+        let check = agent.run_turn(&check_prompt).await?;
+        let check_text = check.final_text.trim().to_string();
+
+        if check_text.contains("GOAL COMPLETE") {
+            done_confirmed += 1;
+            if done_confirmed >= 2 {
+                eprintln!(
+                    "-- autonomous: GOAL COMPLETE (verified twice, {} requests, {} turns, {:.1}k tokens, {:.1}h)",
+                    agent.state.requests,
+                    agent.state.turns,
+                    (agent.state.usage.input_tokens + agent.state.usage.output_tokens) as f64 / 1000.0,
+                    elapsed.as_secs_f32() / 3600.0,
+                );
+                break;
+            }
+            eprintln!("-- autonomous: first confirmation; running one more self-check");
+        } else {
+            done_confirmed = 0;
+            // The model either found more work (tool calls happened) or
+            // didn't say GOAL COMPLETE — treat both as "keep going".
+            if check.final_text.trim().is_empty() && agent.state.turns > 0 {
+                // The model ran tools during the self-check: it found work.
+                // Continue the loop; the next iteration re-checks.
+            }
+        }
+        last_final = check.final_text.clone();
+
+        // Safety: if the turn cap fires inside run_turn, we'd loop here
+        // forever — the hard iteration cap already bounds run_turn, and
+        // the budget checks above bound this loop.
+        if agent.state.turns >= agent.cfg.max_turns as u64 * 4 {
+            eprintln!(
+                "-- autonomous: turn ceiling reached ({}), stopping",
+                agent.state.turns
+            );
+            break;
+        }
+    }
+
+    // Final report.
+    let u = &agent.state.usage;
+    eprintln!(
+        "-- usage: {} request(s) | in {} (cache: {} read, {} write) | out {} | turns {}",
+        agent.state.requests,
+        u.input_tokens,
+        u.cache_read_tokens,
+        u.cache_creation_tokens,
+        u.output_tokens,
+        agent.state.turns,
+    );
+    println!("{}", last_final.trim());
+    Ok(())
 }
 
 /// --output-schema accepts inline JSON or a path to a .json file.
