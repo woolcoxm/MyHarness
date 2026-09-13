@@ -187,10 +187,8 @@ async fn async_main() -> Result<()> {
             agent.ui.warn(&format!("turn failed: {e}"));
         }
     }
-    if matches!(cli.cmd, Some(cli::Command::Tui)) {
-        return tui::run(agent).await;
-    }
-    ui::repl(agent).await
+    // TUI is the default interactive frontend
+    tui::run(agent).await
 }
 
 /// Autonomous mode: work until verified done, bounded by time and token

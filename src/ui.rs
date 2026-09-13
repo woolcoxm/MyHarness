@@ -8,11 +8,9 @@
 
 use crate::agent::Agent;
 use crate::tools::ToolOutput;
-use anyhow::Result;
 use serde_json::Value;
 use std::io::Write;
 use tokio::io::AsyncBufReadExt;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -370,70 +368,8 @@ const HELP: &str = "\
 /<skill> [args]       run a discovered skill by name
 /commands             list slash-command files (.agents/commands/*.md)";
 
-pub async fn repl(mut agent: Agent) -> Result<()> {
-    let busy = Arc::new(AtomicBool::new(false));
-    let cancel = Arc::clone(&agent.cancel);
+// REPL removed — TUI is the default interactive frontend.
 
-    // Ctrl-C: first press interrupts the running turn; second exits.
-    let busy_flag = Arc::clone(&busy);
-    let cancel_task = Arc::clone(&cancel);
-    tokio::spawn(async move {
-        loop {
-            if tokio::signal::ctrl_c().await.is_err() {
-                return;
-            }
-            if busy_flag.swap(false, Ordering::SeqCst) {
-                cancel_task.store(true, Ordering::SeqCst);
-                eprintln!("\n(interrupting... press Ctrl-C again to force quit)");
-            } else {
-                std::process::exit(130);
-            }
-        }
-    });
-
-    agent.ui.banner(
-        &agent.model,
-        agent.perms.mode.name(),
-        agent.session.as_ref().map(|s| s.id.as_str()),
-    );
-
-    let history_path = agent.cfg.data_dir.join("history.txt");
-    let mut editor = rustyline::DefaultEditor::new()?;
-    let _ = std::fs::create_dir_all(&agent.cfg.data_dir);
-    let _ = editor.load_history(&history_path);
-
-    loop {
-        let line = match editor.readline("mh> ") {
-            Ok(l) => l,
-            Err(rustyline::error::ReadlineError::Interrupted) => continue,
-            Err(rustyline::error::ReadlineError::Eof) => break,
-            Err(e) => return Err(e.into()),
-        };
-        let trimmed = line.trim().to_string();
-        if trimmed.is_empty() {
-            continue;
-        }
-        let _ = editor.add_history_entry(&trimmed);
-        let _ = editor.save_history(&history_path);
-
-        if let Some(cmd) = trimmed.strip_prefix('/') {
-            if handle_slash(&mut agent, cmd).await == SlashResult::Quit {
-                break;
-            }
-            continue;
-        }
-
-        busy.store(true, Ordering::SeqCst);
-        let result = agent.run_turn(&trimmed).await;
-        busy.store(false, Ordering::SeqCst);
-        cancel.store(false, Ordering::SeqCst);
-        if let Err(e) = result {
-            agent.ui.warn(&format!("turn failed: {e}"));
-        }
-    }
-    println!("bye");
-    Ok(())
-}
 
 #[derive(PartialEq)]
 pub enum SlashResult {
