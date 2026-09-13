@@ -29,7 +29,9 @@ jobs:
       - name: Offline smoke test
         shell: bash
         env:
-          MYHARNESS_MOCK_FILE: examples/smoke-script.json
+          # Absolute: the smoke runs from a scratch cwd, so a relative
+          # mock-script path would not resolve.
+          MYHARNESS_MOCK_FILE: ${{ github.workspace }}/examples/smoke-script.json
           MYHARNESS_DATA_DIR: ${{ runner.temp }}/mh_smoke
         run: |
           mkdir -p "$MYHARNESS_DATA_DIR"
