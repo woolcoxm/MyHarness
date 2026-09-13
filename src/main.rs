@@ -202,13 +202,15 @@ async fn async_main() -> Result<()> {
 /// requiring two consecutive confirmed "done" turns to complete, and a
 /// single "I found more work" to keep going.
 async fn autonomous_run(agent: &mut Agent, task: &str, cli: &cli::Cli) -> Result<()> {
+    let hours = cli.budget_hours.unwrap_or(8.0);
     let deadline = std::time::Instant::now()
-        + std::time::Duration::from_secs_f64(cli.budget_hours.unwrap_or(8.0) * 3600.0);
-    let token_budget = cli.budget_tokens.unwrap_or(1_000_000);
+        + std::time::Duration::from_secs_f64(hours * 3600.0);
+    // 1M tokens per hour of runtime (coding plan budget rate).
+    let token_budget = cli.budget_tokens.unwrap_or((hours * 1_000_000.0) as u64);
 
     eprintln!(
-        "-- autonomous: budget {}h / {}M tokens | task: {}",
-        cli.budget_hours.unwrap_or(8.0),
+        "-- autonomous: budget {}h / {}M tokens (1M/h) | task: {}",
+        hours,
         token_budget / 1_000_000,
         task.chars().take(80).collect::<String>()
     );
