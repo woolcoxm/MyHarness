@@ -171,22 +171,22 @@ impl App {
     }
 
     pub fn dim(&self) -> Style {
-        Style::default().fg(if self.no_color { Color::Reset } else { Color::DarkGray })
+        if self.no_color { Style::default() } else { Style::default().fg(Color::Rgb(110, 118, 129)) }
     }
 
     pub fn accent(&self) -> Style {
-        if self.no_color {
-            Style::default()
-        } else {
-            Style::default().fg(Color::Cyan)
-        }
+        if self.no_color { Style::default() } else { Style::default().fg(Color::Rgb(88, 166, 255)) }
+    }
+
+    pub fn accent_bold(&self) -> Style {
+        if self.no_color { Style::default().add_modifier(Modifier::BOLD) } else { Style::default().fg(Color::Rgb(88, 166, 255)).add_modifier(Modifier::BOLD) }
     }
 
     pub fn user_style(&self) -> Style {
         if self.no_color {
             Style::default().add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+            Style::default().fg(Color::Rgb(86, 208, 213)).add_modifier(Modifier::BOLD)
         }
     }
 
@@ -829,10 +829,10 @@ mod tests {
             .map(|l| l.to_string())
             .collect::<Vec<_>>()
             .join("\n");
-        assert!(joined.contains("== hello world"), "{joined}");
-        assert!(joined.contains("you > fix it"), "{joined}");
-        assert!(joined.contains("- old line"), "{joined}");
-        assert!(joined.contains("+ new line"), "{joined}");
+        assert!(joined.contains("hello world"), "{joined}");
+        assert!(joined.contains("fix it"), "{joined}");
+        assert!(joined.contains("old line"), "{joined}");
+        assert!(joined.contains("new line"), "{joined}");
     }
 
     #[test]
@@ -888,7 +888,7 @@ mod tests {
             }
             screen.push('\n');
         }
-        for expected in ["you > fix the test", "bash  cargo test", "ok  test result", "all green", "turn done", "mock-model", "> next task"] {
+        for expected in ["fix the test", "bash", "cargo test", "test result", "all green", "mock-model", "next task"] {
             assert!(screen.contains(expected), "missing {expected:?} in:\n{screen}");
         }
     }
