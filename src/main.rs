@@ -1,6 +1,6 @@
 //! myharness — a terminal coding-agent harness for GLM (binary entry point).
 
-use myharness::{agent, cli, config, llm, mcp, perms, server, session, tools, tui, ui};
+use myharness::{agent, auth, cli, config, llm, mcp, perms, server, session, tools, tui, ui};
 
 use agent::state::AgentState;
 use agent::Agent;
@@ -37,6 +37,10 @@ async fn async_main() -> Result<()> {
     match &cli.cmd {
         Some(cli::Command::Sessions) => {
             list_sessions(&cfg);
+            return Ok(());
+        }
+        Some(cli::Command::Login) => {
+            login_cli()?;
             return Ok(());
         }
         Some(cli::Command::Config) => {
@@ -414,4 +418,84 @@ fn list_sessions(cfg: &Config) {
             .to_string();
         println!("{id:<22} {when:<16} {model:<10.10} {count:<6} {first}");
     }
+}
+
+
+/// Interactive credential setup — runs in normal terminal mode (before TUI).
+fn login_cli() -> Result<()> {
+    use std::io::Write;
+    println!("myharness credential setup");
+    println!();
+    if crate::auth::exists() {
+        println!("Existing credentials found. Setting up will replace them.");
+        println!();
+    }
+    println!("Which provider are you using?");
+    println!("  1. Z.ai Coding Plan (subscription - recommended for GLM models)");
+    println!("  2. Standard Z.ai API (pay per token)");
+    println!("  3. Custom OpenAI-compatible endpoint");
+    println!();
+    print!("Enter your choice [1-3]: ");
+    std::io::stdout().flush()?;
+    let mut choice = String::new();
+    std::io::stdin().read_line(&mut choice)?;
+    let (name, default_url, default_model, protocol) = match choice.trim() {
+        "1" => (
+            "coding-plan",
+            "https://open.bigmodel.cn/api/coding/paas/v4".to_string(),
+            "glm-5.3".to_string(),
+            "openai",
+        ),
+        "2" => (
+            "standard-api",
+            "https://api.z.ai/api/anthropic".to_string(),
+            "glm-5.3".to_string(),
+            "anthropic",
+        ),
+        "3" => {
+            print!("Base URL (e.g. https://api.example.com/v1): ");
+            std::io::stdout().flush()?;
+            let mut url = String::new();
+            std::io::stdin().read_line(&mut url)?;
+            print!("Model name [glm-5.3]: ");
+            std::io::stdout().flush()?;
+            let mut model = String::new();
+            std::io::stdin().read_line(&mut model)?;
+            let model = if model.trim().is_empty() { "glm-5.3".to_string() } else { model.trim().to_string() };
+            ("custom", url.trim().to_string(), model, "openai")
+        }
+        _ => {
+            println!("Invalid choice.");
+            std::process::exit(1);
+        }
+    };
+    print!("Paste your API key: ");
+    std::io::stdout().flush()?;
+    let mut key = String::new();
+    std::io::stdin().read_line(&mut key)?;
+    let key = key.trim().to_string();
+    if key.is_empty() {
+        println!("Empty key, aborting.");
+        std::process::exit(1);
+    }
+    let mut providers = std::collections::HashMap::new();
+    providers.insert(
+        name.to_string(),
+        myharness::auth::ProviderAuth {
+            api_key: key,
+            base_url: default_url,
+            model: default_model,
+            protocol: protocol.to_string(),
+        },
+    );
+    myharness::auth::save(name, providers)?;
+    println!();
+    println!(
+        "Credentials saved to {}",
+        myharness::auth::auth_path()
+            .map(|p| p.display().to_string())
+            .unwrap_or_default()
+    );
+    println!("Run `myharness` to start.");
+    Ok(())
 }

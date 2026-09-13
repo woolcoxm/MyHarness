@@ -589,6 +589,13 @@ fn handle_term_event(
                 let _ = std::fs::create_dir_all(hp.parent().unwrap_or(std::path::Path::new(".")));
                 let _ = std::fs::write(hp, app.input.history_text());
             }
+            if text == "/login" {
+                app.items.push(Item::System {
+                    text: "/login must run from the terminal: exit this TUI (ctrl+c) and run: myharness login".to_string(),
+                    warn: true,
+                });
+                return Flow::Continue;
+            }
             if app.busy {
                 // Steering (pi): the agent injects this after the current
                 // tool batch, or as a follow-up round if it already ended.

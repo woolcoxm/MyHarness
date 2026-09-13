@@ -86,6 +86,8 @@ pub enum Command {
     Config,
     /// Resume a session (id prefix; default: most recent).
     Resume { id: Option<String> },
+    /// Set up API credentials (coding plan, standard API, or custom).
+    Login,
     /// JSON-RPC 2.0 over stdio (one JSON object per line) so other tools
     /// can drive the harness: initialize, session.list, turn.run,
     /// turn.cancel; mh/* notifications stream during turns.
