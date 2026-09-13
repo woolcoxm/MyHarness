@@ -150,12 +150,12 @@ impl Provider for OpenAiProvider {
             let mut open_indexes: Vec<usize> = Vec::new();
             // Stall watchdog: a silently-stalled connection fails loudly
             // instead of hanging the agent forever.
-            const STALL_LIMIT: std::time::Duration = std::time::Duration::from_secs(180);
+            const STALL_LIMIT: std::time::Duration = std::time::Duration::from_secs(600);
             loop {
                 let chunk = match tokio::time::timeout(STALL_LIMIT, stream.next()).await {
                     Err(_) => {
                         let _ = tx.try_send(Err(anyhow::anyhow!(
-                            "stream stalled: no data for 180s (server stopped sending without closing)"
+                            "stream stalled: no data for 600s (server stopped sending without closing)"
                         )));
                         break;
                     }

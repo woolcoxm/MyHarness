@@ -65,9 +65,12 @@ fn serialize_messages(messages: &[Message]) -> Vec<Value> {
                     ContentBlock::ToolResult { tool_use_id, content, images, is_error } => {
                         // With images the content becomes a block array
                         // (text + image blocks); plain text stays a string.
+                        // `id` mirrors `tool_use_id` — the Z.ai gateway's
+                        // Claude-compat layer reads `.id` on result blocks.
                         if images.is_empty() {
                             let mut v = json!({
                                 "type": "tool_result",
+                                "id": tool_use_id,
                                 "tool_use_id": tool_use_id,
                                 "content": content,
                             });
@@ -222,28 +225,31 @@ impl Provider for AnthropicProvider {
                 }
             }
         }
-        let body = if let Some(budget) = self.thinking_budget {
-            json!({
-                "model": req.model,
-                "max_tokens": req.max_tokens,
-                "temperature": req.temperature,
-                "system": system,
-                "messages": messages,
-                "tools": serialize_tools(&req.tools, self.prompt_caching),
-                "thinking": {"type": "enabled", "budget_tokens": budget},
-                "stream": true,
-            })
-        } else {
-            json!({
-                "model": req.model,
-                "max_tokens": req.max_tokens,
-                "temperature": req.temperature,
-                "system": system,
-                "messages": messages,
-                "tools": serialize_tools(&req.tools, self.prompt_caching),
-                "stream": true,
-            })
-        };
+        // Always send thinking as ENABLED — Z.ai's API silently returns
+        // empty responses when thinking: {type: "disabled"} is sent.
+        // Default budget: 4096 (pi uses 1024; GLM-5.3 needs more for code).
+        let budget = self.thinking_budget.unwrap_or(4096);
+        let clamped = budget.min((req.max_tokens as u64).saturating_sub(1024).max(1024));
+        let body = json!({
+            "model": req.model,
+            "max_tokens": req.max_tokens,
+            "temperature": req.temperature,
+            "system": system,
+            "messages": messages,
+            "tools": serialize_tools(&req.tools, self.prompt_caching),
+            "thinking": {"type": "enabled", "budget_tokens": clamped},
+            "stream": true,
+        });
+        let debug = std::env::var("MYHARNESS_DEBUG").map(|v| v == "1").unwrap_or(false);
+        if debug {
+            let body_str = serde_json::to_string(&body).unwrap_or_default();
+            eprintln!(
+                "[DEBUG] -> POST {} | body {} bytes | messages {} | tools {}",
+                url, body_str.len(), messages.len(),
+                body["tools"].as_array().map(|a| a.len()).unwrap_or(0),
+            );
+        }
+
         let request = self
             .client
             .post(&url)
@@ -252,23 +258,48 @@ impl Provider for AnthropicProvider {
             .json(&body);
 
         let resp = send_with_retry(request).await?;
+        let status = resp.status();
+        if debug {
+            eprintln!("[DEBUG] <- HTTP {} | headers: content-type={}", status,
+                resp.headers().get("content-type").and_then(|v| v.to_str().ok()).unwrap_or("?"));
+        }
+
         let mut stream = resp.bytes_stream();
         let (tx, rx) = mpsc::channel(64);
         tokio::spawn(async move {
             let mut sse = SseBuffer::new();
             let mut closed = false;
+            let mut total_events = 0u32;
+            let mut last_stop = String::new();
             while let Some(chunk) = stream.next().await {
                 match chunk {
                     Ok(bytes) => {
+                        total_events += 1;
+                        if debug && total_events.is_multiple_of(50) {
+                            eprintln!("[DEBUG]   ... {} SSE events received", total_events);
+                        }
                         for (event, data) in sse.feed(&bytes) {
                             if event.as_deref() == Some("error") {
-                                let _ = tx.send(Err(anyhow::anyhow!("stream error: {data}"))).await;
+                                if debug { eprintln!("[DEBUG] SSE error: {}", &data[..data.len().min(200)]); }
+                                let _ = tx.try_send(Err(anyhow::anyhow!("stream error: {data}")));
                                 closed = true;
                                 break;
                             }
                             for ev in map_event(event.as_deref(), &data) {
+                                if debug {
+                                    match &ev {
+                                        StreamEvent::MessageStart => eprintln!("[DEBUG]   message_start (received, waiting for content blocks...)"),
+                                        StreamEvent::ToolUseStart { id, name } => eprintln!("[DEBUG]   tool_use_start: {} ({})", name, &id[..id.len().min(16)]),
+                                        StreamEvent::MessageDelta { stop_reason: Some(sr) } => {
+                                            last_stop = sr.clone();
+                                            eprintln!("[DEBUG]   message_delta stop_reason={}", sr);
+                                        }
+                                        StreamEvent::MessageStop => eprintln!("[DEBUG]   message_stop (last_stop={}, total_events={})", last_stop, total_events),
+                                        _ => {}
+                                    }
+                                }
                                 let is_stop = matches!(ev, StreamEvent::MessageStop);
-                                if tx.send(Ok(ev)).await.is_err() {
+                                if tx.try_send(Ok(ev)).is_err() {
                                     return;
                                 }
                                 if is_stop {
@@ -281,10 +312,14 @@ impl Provider for AnthropicProvider {
                         }
                     }
                     Err(e) => {
-                        let _ = tx.send(Err(anyhow::anyhow!("stream read error: {e}"))).await;
+                        if debug { eprintln!("[DEBUG] stream error: {}", e); }
+                        let _ = tx.try_send(Err(anyhow::anyhow!("stream read error: {e}")));
                         break;
                     }
                 }
+            }
+            if debug {
+                eprintln!("[DEBUG] stream ended: {} events, last_stop={}", total_events, last_stop);
             }
         });
         Ok(rx)

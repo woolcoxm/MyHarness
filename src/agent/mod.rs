@@ -188,6 +188,12 @@ impl Agent {
         }
     }
 
+    fn debug_log(&self, msg: &str) {
+        if std::env::var("MYHARNESS_DEBUG").map(|v| v == "1").unwrap_or(false) {
+            eprintln!("[DEBUG:agent] {}", msg);
+        }
+    }
+
     fn cancelled(&self) -> bool {
         self.cancel.load(Ordering::Relaxed)
     }
@@ -237,6 +243,8 @@ impl Agent {
                 self.deliver_bg_notices().await;
             }
 
+            self.debug_log(&format!("request #{} (iteration {}): {} messages in history",
+                self.state.requests + 1, iterations, self.state.messages.len()));
             let req = self.build_request();
             let mut rx = self.provider.stream(&req).await?;
             self.state.requests += 1;
@@ -253,6 +261,9 @@ impl Agent {
                 })
                 .collect::<Vec<_>>()
                 .join("");
+            self.debug_log(&format!("response: {} text blocks, {} tool_uses, stop={:?}",
+                blocks.iter().filter(|b| matches!(b, ContentBlock::Text {..})).count(),
+                tool_uses_of(&blocks).len(), stop_reason));
             let tool_uses: Vec<(String, String, Value)> = tool_uses_of(&blocks);
             let assistant = Message { role: Role::Assistant, content: blocks };
             self.state.messages.push(assistant.clone());
@@ -381,6 +392,7 @@ impl Agent {
                 return Ok(TurnOutcome { final_text, interrupted: false });
             }
 
+            self.debug_log(&format!("executing {} tool call(s): {}", tool_uses.len(), tool_uses.iter().map(|(_,n,_)| n.as_str()).collect::<Vec<_>>().join(", ")));
             let results = self.execute_tool_uses(&tool_uses).await;
             // Doom-loop gate (opencode): track consecutive identical calls
             // that keep failing; the plan phase refuses to run the fourth.

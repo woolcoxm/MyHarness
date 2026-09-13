@@ -248,10 +248,18 @@ impl Config {
         Self::load_dotenv();
         let file = Self::load_file();
 
-        let provider = overrides
+        // Discover coding plan FIRST (needed for both provider switch and base URL)
+        let coding_plan_url = Config::discover_coding_plan_base_url();
+        let mut provider = overrides
             .provider
             .or(file.model.as_ref().and_then(|m| m.provider))
             .unwrap_or(ProviderKind::Anthropic);
+        // Auto-switch to OpenAI protocol when the coding plan is detected:
+        // the coding plan endpoint (open.bigmodel.cn) uses OpenAI-compatible
+        // wire format, not Anthropic Messages.
+        if provider == ProviderKind::Anthropic && coding_plan_url.is_some() && overrides.base_url.is_none() {
+            provider = ProviderKind::Openai;
+        }
 
         let default_base = match provider {
             ProviderKind::Anthropic => "https://api.z.ai/api/anthropic".to_string(),
@@ -266,6 +274,7 @@ impl Config {
             .base_url
             .or(env_base)
             .or(file.model.as_ref().and_then(|m| m.base_url.clone()))
+            .or(coding_plan_url)
             .unwrap_or(default_base);
 
         let model = overrides
@@ -300,7 +309,7 @@ impl Config {
             model_fast: file.model.as_ref().and_then(|m| m.model_fast.clone()),
             base_url,
             api_key,
-            max_tokens: file.model.as_ref().and_then(|m| m.max_tokens).unwrap_or(16384),
+            max_tokens: file.model.as_ref().and_then(|m| m.max_tokens).unwrap_or(32768),
             temperature: file.model.as_ref().and_then(|m| m.temperature).unwrap_or(0.3),
             context_window: file.model.as_ref().and_then(|m| m.context_window).unwrap_or(200_000),
             max_turns: file.agent.as_ref().and_then(|a| a.max_turns).unwrap_or(80),
@@ -321,7 +330,7 @@ impl Config {
                 .as_ref()
                 .and_then(|m| m.prompt_caching)
                 .unwrap_or(true),
-            thinking_budget: file.model.as_ref().and_then(|m| m.thinking_budget),
+            thinking_budget: file.model.as_ref().and_then(|m| m.thinking_budget).or(Some(4096)),
             reasoning_effort: file.model.as_ref().and_then(|m| m.reasoning_effort.clone()),
             bash_timeout_ms: file.bash.as_ref().and_then(|b| b.timeout_ms).unwrap_or(120_000).clamp(1_000, 600_000),
             shell: file.bash.as_ref().and_then(|b| b.shell).unwrap_or(ShellChoice::Auto),
@@ -402,11 +411,11 @@ impl Config {
 
     fn resolve_api_key(provider: ProviderKind, file_env: Option<&str>) -> Option<String> {
         if let Ok(k) = std::env::var("MYHARNESS_API_KEY") {
-            return Some(k);
+            if !k.is_empty() { return Some(k); }
         }
         if let Some(name) = file_env {
             if let Ok(k) = std::env::var(name) {
-                return Some(k);
+                if !k.is_empty() { return Some(k); }
             }
         }
         let candidates: &[&str] = match provider {
@@ -414,7 +423,33 @@ impl Config {
             ProviderKind::Openai => &["ZAI_API_KEY", "GLM_API_KEY", "OPENAI_API_KEY"],
             ProviderKind::Mock => &[],
         };
-        candidates.iter().find_map(|n| std::env::var(n).ok().filter(|v| !v.is_empty()))
+        if let Some(k) = candidates.iter().find_map(|n| std::env::var(n).ok().filter(|v| !v.is_empty())) {
+            return Some(k);
+        }
+        Self::discover_pi_auth_key()
+    }
+
+    /// Read the coding-plan API key from ~/.pi/agent/auth.json
+    fn discover_pi_auth_key() -> Option<String> {
+        let path = dirs::home_dir()?.join(".pi").join("agent").join("auth.json");
+        let raw = std::fs::read_to_string(path).ok()?;
+        let parsed: serde_json::Value = serde_json::from_str(&raw).ok()?;
+        let key = parsed.get("zai-coding-cn")?.get("key")?.as_str()?;
+        (!key.is_empty()).then(|| key.to_string())
+    }
+
+    /// Discover the coding-plan base URL from pi's model store.
+    pub fn discover_coding_plan_base_url() -> Option<String> {
+        let path = dirs::home_dir()?.join(".pi").join("agent").join("models-store.json");
+        let raw = std::fs::read_to_string(path).ok()?;
+        let parsed: serde_json::Value = serde_json::from_str(&raw).ok()?;
+        let models = parsed.get("zai-coding-cn")?.get("models")?.as_array()?;
+        for m in models {
+            if m.get("id").and_then(|v| v.as_str()) == Some("glm-5.3") {
+                return m.get("baseUrl").and_then(|v| v.as_str()).map(String::from);
+            }
+        }
+        models.first().and_then(|m| m.get("baseUrl").and_then(|v| v.as_str())).map(String::from)
     }
 
     pub fn sessions_dir(&self) -> PathBuf {
